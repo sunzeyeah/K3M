@@ -404,17 +404,24 @@ class Conceptual_Caption(td.RNGDataFlow):
 
 def generate_lmdb(args, dtype):
     ds = Conceptual_Caption(args, dtype)
-    if not sys.platform.startswith("win"):
+    if sys.platform.startswith("win"):
+        out_file = os.path.join(args.output_dir, f"{dtype}_feat.tfrecord")
+        serializer = td.TFRecordSerializer
+    else:
         ds = td.PrefetchDataZMQ(ds, nr_proc=1)
+        out_file = os.path.join(args.output_dir, f"{dtype}_feat.lmdb")
+        serializer = td.LMDBSerializer
 
-    out_file = os.path.join(args.output_dir, f"{dtype}_feat.lmdb")
     if os.path.isfile(out_file):
         os.remove(out_file)
 
     try:
-        td.LMDBSerializer.save(ds, out_file)
+        serializer.save(ds, out_file)
+        # td.TFRecordSerializer.save(ds, out_file)
+        # td.NumpySerializer.save(ds, out_file)
+        # td.HDF5Serializer.save(ds, out_file)
     except Exception as e:
-        logger.error("[Error] LMDBSerializer saving", e)
+        logger.error("[Error] serialization", e)
         # traceback.print_exc()
 
 
