@@ -341,6 +341,7 @@ class Conceptual_Caption(td.RNGDataFlow):
                 try:
                     image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
                     image_rgb = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2BGR)
+                    # 抽取图像特征
                     detection_feature = get_detections_from_image(self.predictor, image_rgb)
                     if detection_feature is None:
                         continue
@@ -350,12 +351,7 @@ class Conceptual_Caption(td.RNGDataFlow):
                     boxes = detection_feature['boxes']
                     features = detection_feature['features']
                     cls_prob = detection_feature['cls_prob']
-                    # boxes = np.frombuffer(base64.b64decode(item['boxes'][2:-1]), dtype=np.float32).reshape(
-                    #     int(num_boxes), 4)
-                    # features = np.frombuffer(base64.b64decode(item['features'][2:-1]), dtype=np.float32).reshape(
-                    #     int(num_boxes), 2048)
-                    # cls_prob = np.frombuffer(base64.b64decode(item['cls_prob'][2:-1]), dtype=np.float32).reshape(int(num_boxes), 1601)
-
+                    # 图像与其余模态混合存储
                     self.lines.append([features, cls_prob, boxes, num_boxes, image_h, image_w, image_id, title, item_pvs, cate_name])
                 except cv2.error as e:
                     logger.error(f"[CV2 ERROR] image_id: {image_id}", e)
@@ -402,8 +398,9 @@ class Conceptual_Caption(td.RNGDataFlow):
             yield line
 
 
-def generate_lmdb(args, dtype):
+def serialize(args, dtype):
     ds = Conceptual_Caption(args, dtype)
+
     if sys.platform.startswith("win"):
         out_file = os.path.join(args.output_dir, f"{dtype}_feat.tfrecord")
         serializer = td.TFRecordSerializer
@@ -444,9 +441,9 @@ def main():
     #     generate_image_features(args, dtype)
     # logger.info("[Step 3] Finished extracting image features")
 
-    # step 4: 生成lmdb文件
+    # step 4: 抽取图像特征，和其余模态混合，序列化存储
     for dtype in ["train", "valid"]:
-        generate_lmdb(args, dtype)
+        serialize(args, dtype)
     logger.info("Finished generating lmdb files")
 
 
