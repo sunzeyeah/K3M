@@ -47,8 +47,6 @@ def write_json(file,data):
     return
 
 
-
-    
 def load_image_ids(raw_file_path):
     id_ids = []
     id_titles =[]
@@ -90,10 +88,10 @@ def generate_df(train_or_val):##json文件产自所有文件，而提取图片�
         print(index, ':', infile)
         this_df = load_image_ids(infile)
         
-        if index==0:
-            all_df=this_df
+        if index == 0:
+            all_df = this_df
         else:
-            all_df=pd.concat([all_df,this_df])
+            all_df = pd.concat([all_df,this_df])
         
     
     all_df.to_csv("./data/image_lmdb_json/df_"+train_or_val+".csv",encoding = "utf-8")
