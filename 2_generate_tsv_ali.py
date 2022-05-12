@@ -165,6 +165,8 @@ def get_predictor():
     cfg.MODEL.ROI_HEADS.SCORE_THRESH_TEST = 0.2
     # VG Weight
     cfg.MODEL.WEIGHTS = "./faster-rcnn-pkl/faster_rcnn_from_caffe.pkl"
+    # Device
+    cfg.MODEL.DEVICE = "cpu"
     predictor = DefaultPredictor(cfg)
     print("predictor: ", predictor)
 

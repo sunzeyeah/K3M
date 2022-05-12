@@ -13,7 +13,7 @@ import zlib
 import base64
 from tqdm import tqdm
 
-# csv.field_size_limit(sys.maxsize)
+csv.field_size_limit(sys.maxsize)
 
 
 def open_tsv(fname):
