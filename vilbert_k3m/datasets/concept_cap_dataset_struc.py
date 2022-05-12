@@ -269,10 +269,9 @@ class ConceptCapLoaderTrain_struc(object):
             objective=objective,
         )
 
-        ds = td.PrefetchData(ds, 5000, 1)
+        # ds = td.PrefetchData(ds, 5000, 1)
         ds = td.MapData(ds, preprocess_function)
-        # self.ds = td.PrefetchData(ds, 1)
-        ds = td.PrefetchDataZMQ(ds, num_workers)
+        # ds = td.PrefetchDataZMQ(ds, num_workers)
         # print("batch_size",batch_size)
         self.ds = td.BatchData(ds, batch_size)
         # self.ds = ds

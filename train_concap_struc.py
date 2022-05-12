@@ -34,6 +34,30 @@ from vilbert_k3m.vilbert_k3m import BertConfig, BertForMultiModalPreTraining_tri
 import torch.distributed as dist
 
 
+def get_logger(args):
+    logger = logging.getLogger(__name__)
+    # 日志打印到控制台
+    logger.setLevel(logging.INFO)
+
+    # 输出到文件
+    if not os.path.exists('log'):
+        os.mkdir('log')
+    logname = "log/spam-presample_{}.log".format(args.if_pre_sampling)
+    fh = logging.FileHandler(logname)
+    fh.setLevel(logging.INFO)
+
+    # 设置日志格式
+    formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+    #ch.setFormatter(formatter)
+    fh.setFormatter(formatter)
+    # 将相应的handler添加在logger对象中
+    #logger.addHandler(ch)
+    logger.addHandler(fh)
+
+    return logger
+
+
+
 def warmup_linear(x, warmup=0.002):
     """ Specifies a triangular learning rate schedule where peak is reached at `warmup`*`t_total`-th (as provided to BertAdam) training step.
         After `t_total`-th training step, learning rate is zero. """
@@ -42,8 +66,7 @@ def warmup_linear(x, warmup=0.002):
     return max((x - 1.) / (warmup - 1.), 0)
 
 
-
-def main():
+def get_parser():
     parser = argparse.ArgumentParser()
 
     # Required parameters
@@ -249,30 +272,14 @@ def main():
     parser.add_argument(#融合策略 0.mean(交互+不交互) 1.sample1(交互,不交互) 2.sample2(交互,不交互)  3.仅交互
         "--if_pre_sampling", default=1, type=int, help="sampling strategy."
     )
-    
-    args = parser.parse_args()
-    
-    ##----------------------------------------------------------------------------------------
-    ## log
-    ##----------------------------------------------------------------------------------------
-    logger = logging.getLogger(__name__)
-    # 日志打印到控制台
-    logger.setLevel(logging.INFO)
-    #ch = logging.StreamHandler()
-    # 输出到文件
-    if not os.path.exists('log'):
-        os.mkdir('log')
-    logname= "log/spam-presample_{}.log".format(args.if_pre_sampling)
-    fh = logging.FileHandler(logname)
-    fh.setLevel(logging.INFO)
 
-    # 设置日志格式
-    formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
-    #ch.setFormatter(formatter)
-    fh.setFormatter(formatter)
-    # 将相应的handler添加在logger对象中
-    #logger.addHandler(ch)
-    logger.addHandler(fh)
+    return parser.parse_args()
+
+
+def main():
+    args = get_parser()
+
+    logger = get_logger(args)
 
 
     if args.baseline:
@@ -323,7 +330,7 @@ def main():
     if default_gpu:
         if not os.path.exists(savePath):
             os.makedirs(savePath)
-    print('default_gpu:',default_gpu)
+    print(f'default_gpu: {default_gpu}')
 
     config = BertConfig.from_json_file(args.config_file)
 
@@ -539,7 +546,6 @@ def main():
         )
         
         model, optimizer = amp.initialize(model, optimizer, opt_level='O1')  # 这里是字母O
-        
     else:
         logger.info('FP16 is not activated, use BertAdam')
         #print('FP16 is not activated, use BertAdam')
@@ -557,9 +563,7 @@ def main():
             warmup_steps=args.warmup_proportion * num_train_optimization_steps,
             t_total=num_train_optimization_steps,
         )
-        
-        
-    
+
     
     startIterID = 0
     global_step = 0
@@ -588,7 +592,6 @@ def main():
         #print(list(need_model_dict.keys()))
         
 
-    
     if args.resume_file != "" and os.path.exists(args.resume_file):
         checkpoint = torch.load(args.resume_file, map_location="cpu")
         new_dict = {}

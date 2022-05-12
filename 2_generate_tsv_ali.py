@@ -7,7 +7,7 @@ import json
 import pandas as pd
 import zlib
 import os
-
+import traceback
 from tqdm import tqdm
 
 import detectron2
@@ -40,6 +40,7 @@ def read_json(file):
     f=open(file,"r",encoding="utf-8").read()
     return json.loads(f)
 
+
 def write_json(file,data):
     f=open(file,"w",encoding="utf-8")
     json.dump(data,f,indent=2,ensure_ascii=False)
@@ -53,12 +54,14 @@ def open_tsv(fname, folder):
     print("Processing", len(df), " Images:")
     return df
 
+
 def write_to_tsv(output_path: str, file_columns: list, data: list):
     csv.register_dialect('tsv_dialect', delimiter='\t', quoting=csv.QUOTE_ALL)
     with open(output_path, "w", newline="") as wf:
         writer = csv.DictWriter(wf, fieldnames=file_columns, dialect='tsv_dialect')
         writer.writerows(data)
     csv.unregister_dialect('tsv_dialect')
+
 
 def read_from_tsv(file_path: str, column_names: list) -> list:
     csv.register_dialect('tsv_dialect', delimiter='\t', quoting=csv.QUOTE_ALL)
@@ -75,13 +78,10 @@ def read_from_tsv(file_path: str, column_names: list) -> list:
 def _file_name(row):
     return "%s/%s" % (row['folder'], (zlib.crc32(row['url'].encode('utf-8')) & 0xffffffff))
 
-    
-    
-
 
 def get_detections_from_image(predictor,raw_image,image_id):
     with torch.no_grad():
-        raw_height,raw_width=raw_image.shape[:2]
+        raw_height, raw_width = raw_image.shape[:2]
         # print("original image size: ",raw_height,raw_width)
 
         # Preprocessing
@@ -156,6 +156,7 @@ def get_detections_from_image(predictor,raw_image,image_id):
 
     return return_data
 
+
 def get_predictor():
     cfg = get_cfg()
     cfg.merge_from_file("./py-bottom-up-attention/configs/VG-Detection/faster_rcnn_R_101_C4_caffe.yaml")
@@ -165,41 +166,43 @@ def get_predictor():
     # VG Weight
     cfg.MODEL.WEIGHTS = "./faster-rcnn-pkl/faster_rcnn_from_caffe.pkl"
     predictor = DefaultPredictor(cfg)
-    print("predictor: ",predictor)
+    print("predictor: ", predictor)
 
     return predictor
 
 
+def generate_tsv(image_ids, outfile):
+    predictor = get_predictor()
 
-def generate_tsv(image_ids,outfile):
-    predictor=get_predictor()
-
-    tsvfile=open(outfile,"w")
-    writer=csv.DictWriter(tsvfile,delimiter="\t",fieldnames=FIELDNAMES)
+    tsvfile = open(outfile, "w", encoding="utf-8")
+    writer = csv.DictWriter(tsvfile, delimiter="\t", fieldnames=FIELDNAMES)
 
     for (image_id, image_file) in tqdm(image_ids):
-        image=cv2.imread('./data/image/' + image_file)
+        image = cv2.imread('./data/image/' + image_file)
         # print('./data/image/' + image_file)
         
         #if True:
         try:
             image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
             image_rgb = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2BGR)
-            detection_feature=get_detections_from_image(predictor,image_rgb,image_id)
+            detection_feature = get_detections_from_image(predictor, image_rgb, image_id)
             #print(detection_feature)
             if detection_feature==None:
                 continue
             writer.writerow(detection_feature)
+        except cv2.error as e:
+            print(f"\n[CV2 ERROR] image_id: {image_id}")
+            traceback.print_exc()
         except Exception as e:
-            print("image_id: ", image_id, image_file)
-            #print("error: ", e)
-            pass
+            print(f"\n[ERROR] image_id: {image_id}")
+            traceback.print_exc()
 
         # if cnt==5:
         #     break
         # cnt+=1
 
     return
+
 
 def read_tsv(tsv_path):
     def correct_pad(origStr):
@@ -232,17 +235,19 @@ def read_tsv(tsv_path):
             print(cls_prob)
             """
 
-def get_train(tsv_id = 0):#36900000 tsv_id 0-40
-    print('tsv_id:',tsv_id)
+
+def get_train(tsv_id=0):#36900000 tsv_id 0-40
+    print('tsv_id:', tsv_id)
     """train"""
-    train_image_ids= read_json('./data/image_lmdb_json/pic_train.json')
-    counts_in_each_tsv=900000 
-    this_image_ids=train_image_ids[counts_in_each_tsv*tsv_id:counts_in_each_tsv*(tsv_id+1)]
+    train_image_ids = read_json('./data/image_lmdb_json/pic_train.json')
+    counts_in_each_tsv = 900000
+    this_image_ids = train_image_ids[counts_in_each_tsv*tsv_id:counts_in_each_tsv*(tsv_id+1)]
     #for this_id in this_image_ids:
      #   print(this_id)
-    generate_tsv(this_image_ids,"./data/image_features/train.tsv."+str(tsv_id))
-    
-def get_valid(tsv_id = 0): # tsv_id 0-9
+    generate_tsv(this_image_ids, "./data/image_features/train.tsv."+str(tsv_id))
+
+
+def get_valid(tsv_id=0): # tsv_id 0-9
     print('tsv_id:',tsv_id)
     """validation"""
     dev_image_ids = read_json('./data/image_lmdb_json/pic_val.json')

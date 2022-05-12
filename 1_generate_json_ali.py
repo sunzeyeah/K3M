@@ -18,7 +18,6 @@ import io
 import glob 
 import math
 import re
-import pandas as pd
 
 #import detectron2
 
@@ -57,10 +56,10 @@ def load_image_ids(raw_file_path):
     id_pvs =[]
     id_itemIDs =[]
     id_categorys = []
-    with open(raw_file_path, 'r') as f:
+    with open(raw_file_path, 'r', encoding="utf-8") as f:
         for line in tqdm(f):
            
-            image_id,title, pic_name, pvs,category,item_ID=line.strip().split('\t') # 最后是原item_id
+            image_id, title, pic_name, pvs, category, item_ID = line.strip().split('\t') # 最后是原item_id
             id_ids.append(image_id)
            
             id_titles.append(title)
@@ -87,8 +86,8 @@ def generate_df(train_or_val):##json文件产自所有文件，而提取图片�
     
 
     all_df=None
-    for index,infile in enumerate(all_raw_file_path):
-        print(index,':',infile)
+    for index, infile in enumerate(all_raw_file_path):
+        print(index, ':', infile)
         this_df = load_image_ids(infile)
         
         if index==0:
