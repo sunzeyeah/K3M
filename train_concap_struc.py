@@ -42,8 +42,7 @@ def warmup_linear(x, warmup=0.002):
     return max((x - 1.) / (warmup - 1.), 0)
 
 
-
-def main():
+def get_parser():
     parser = argparse.ArgumentParser()
 
     # Required parameters
@@ -249,12 +248,11 @@ def main():
     parser.add_argument(#融合策略 0.mean(交互+不交互) 1.sample1(交互,不交互) 2.sample2(交互,不交互)  3.仅交互
         "--if_pre_sampling", default=1, type=int, help="sampling strategy."
     )
-    
-    args = parser.parse_args()
-    
-    ##----------------------------------------------------------------------------------------
-    ## log
-    ##----------------------------------------------------------------------------------------
+
+    return parser.parse_args()
+
+
+def get_logger(args):
     logger = logging.getLogger(__name__)
     # 日志打印到控制台
     logger.setLevel(logging.INFO)
@@ -274,6 +272,13 @@ def main():
     #logger.addHandler(ch)
     logger.addHandler(fh)
 
+    return logger
+
+
+def main():
+    args = get_parser()
+
+    logger = get_logger(args)
 
     if args.baseline:
         from pytorch_pretrained_bert.modeling import BertConfig
@@ -354,7 +359,7 @@ def main():
         os.makedirs(args.output_dir)
 
     tokenizer = BertTokenizer.from_pretrained(
-        '/home/admin/workspace/workgroup/code/multi_pre_zhuyushan/MultiKG_pretrain/bert-base-chinese/'
+        'bert-base-chinese/'
         # args.bert_model, do_lower_case=args.do_lower_case
     )
     num_train_optimization_steps = None
@@ -557,10 +562,7 @@ def main():
             warmup_steps=args.warmup_proportion * num_train_optimization_steps,
             t_total=num_train_optimization_steps,
         )
-        
-        
-    
-    
+
     startIterID = 0
     global_step = 0
     
@@ -586,8 +588,6 @@ def main():
         
         logger.info('load have_model successfully, continue train...')
         #print(list(need_model_dict.keys()))
-        
-
     
     if args.resume_file != "" and os.path.exists(args.resume_file):
         checkpoint = torch.load(args.resume_file, map_location="cpu")
@@ -609,7 +609,8 @@ def main():
         logger.info('load checkpoint successfully, train continue')
         #print('load checkpoint successfully, train continue')
 
-    model.cuda()
+    if not args.no_cuda:
+        model.cuda()
 
     for state in optimizer.state.values():
         for k, v in state.items():
@@ -643,23 +644,24 @@ def main():
     for epochId in range(int(args.start_epoch), int(args.num_train_epochs)):
         model.train()
         for step, batch in enumerate(train_dataset):
-
             iterId = startIterID + step + (epochId * len(train_dataset))
             image_ids = batch[-1]
             index_p = torch.tensor(batch[-3])
-            index_p = index_p.cuda(device=device, non_blocking=True)
             index_v = torch.tensor(batch[-2])
-            index_v = index_v.cuda(device=device, non_blocking=True)
-            batch = tuple(t.cuda(device=device, non_blocking=True) for t in batch[:-3])
+            batch = tuple(batch[:-3])
+            if not args.no_cuda:
+                index_p = index_p.cuda(device=device, non_blocking=True)
+                index_v = index_v.cuda(device=device, non_blocking=True)
+                batch = tuple(t.cuda(device=device, non_blocking=True) for t in batch[:-3])
 
             input_ids, input_mask, segment_ids, lm_label_ids, is_next, input_ids_pv, input_mask_pv, segment_ids_pv, lm_label_ids_pv, is_next_pv_v, is_next_pv_t, image_feat, image_loc, image_target, image_label, image_mask= (batch)
 
             if args.objective == 1:
-                
+
                 if_replace = is_next + is_next_pv_v + is_next_pv_t
-                
+
                 image_label = image_label * (if_replace == 0).long().unsqueeze(1)  # 把替换了的对应行变为0
-                
+
                 image_label[image_label == 0] = -1  # 发生了替换的mask标签还是归于-1
                 # print("image_label",image_label)
 
@@ -678,7 +680,7 @@ def main():
                 image_feat = image_feat.half()
                 image_loc = image_loc.half()
                 image_target = image_target.half()
-            
+
             # import pdb; pdb.set_trace()
             masked_loss_t, masked_loss_v, next_sentence_loss, masked_loss_pv, next_sentence_loss_pv_v, next_sentence_loss_pv_t, next_sentence_loss_t_v_pv, c_initial, c_final, loss_tri = model(
                 input_ids,
@@ -709,7 +711,7 @@ def main():
                 next_sentence_loss_t_v_pv = next_sentence_loss_t_v_pv * 0
 
             masked_loss_v = masked_loss_v * args.img_weight
-                        
+
             loss = masked_loss_t + masked_loss_v + masked_loss_pv + loss_tri
             #print(masked_loss_pv)
             #print(loss_tri)
@@ -750,7 +752,7 @@ def main():
                     scaled_loss.backward()
             else:
                 loss.backward()
-        
+
             # 梯度回传
             if (step + 1) % args.gradient_accumulation_steps == 0:
                 optimizer.step()
@@ -765,20 +767,17 @@ def main():
                         args.warmup_proportion,
                     )
                     optimizer.param_groups[0]["lr"] = lr_this_step
-                    
-                    
                 elif args.apex_fast:
                     scheduler.step()
                 else:#非fp16和apex加速时用
                     scheduler.step()  # 在PyTorch 1.1.0之前的版本，学习率的调整应该被放在optimizer更新之前的，1.1及之后应该位于后面
-                    # 
-                    
+                    #
 
                 # logger.info('学习率:{} '.format(lr_this_step))
                 #print('学习率:{} '.format(lr_this_step))
 
             # Save a trained model after certain step just model_self
-            if (step+1)%5000==0:#每5000步存储一次
+            if (step+1) % 5000 == 0:#每5000步存储一次
                 if default_gpu:
                     # Save a trained model
                     logger.info("** ** * Saving fine - tuned model ** ** * ")
@@ -796,11 +795,9 @@ def main():
                         },
                         output_checkpoint,
                     )
-        
-        # continue#跳过evaluation
-        
-        # Do the evaluation
-        logger.info('Do the evaluation')
+
+        # Evaluation
+        logger.info(f'[Evaluation] epoch-{epochId}')
         #print('Do the evaluation')
         torch.set_grad_enabled(False)
         numBatches = len(validation_dataset)
@@ -809,15 +806,17 @@ def main():
         for step, batch in enumerate(validation_dataset):
             image_ids = batch[-1]
             index_p = torch.tensor(batch[-3])
-            index_p = index_p.cuda(device=device, non_blocking=True)
             index_v = torch.tensor(batch[-2])
-            index_v = index_v.cuda(device=device, non_blocking=True)
-            batch = tuple(t.cuda(device=device, non_blocking=True) for t in batch[:-3])
+            batch = tuple(batch[:-3])
+            if not args.no_cuda:
+                index_p = index_p.cuda(device=device, non_blocking=True)
+                index_v = index_v.cuda(device=device, non_blocking=True)
+                batch = tuple(t.cuda(device=device, non_blocking=True) for t in batch[:-3])
 
             input_ids, input_mask, segment_ids, lm_label_ids, is_next, input_ids_pv, input_mask_pv, segment_ids_pv, lm_label_ids_pv, is_next_pv_v, is_next_pv_t, image_feat, image_loc, image_target, image_label, image_mask= (batch)
 
             batch_size = input_ids.size(0)
-            if args.fp16  or args.apex_fast:
+            if args.fp16 or args.apex_fast:
                 image_feat = image_feat.half()
                 image_loc = image_loc.half()
                 image_target = image_target.half()
@@ -832,31 +831,25 @@ def main():
                 image_label,
                 image_target,
                 is_next,
-
                 input_ids_pv=input_ids_pv,
                 token_type_ids_pv=segment_ids_pv,  # segnents
                 attention_mask_pv=input_mask_pv,
                 masked_lm_labels_pv=lm_label_ids_pv,
                 next_sentence_label_pv_v=is_next_pv_v,
                 next_sentence_label_pv_t=is_next_pv_t,
-                
                 index_p=index_p,
                 index_v=index_v,
                 device=device
             )
-
             masked_loss_v = masked_loss_v * args.img_weight
-
             loss = masked_loss_t + masked_loss_v + masked_loss_pv + loss_tri
 
-            
             if n_gpu > 1:
                 loss = loss.mean()
                 masked_loss_t = masked_loss_t.mean()
                 masked_loss_v = masked_loss_v.mean()
                 masked_loss_pv = masked_loss_pv.mean()
                 loss_tri = loss_tri.mean()
-
 
             if args.local_rank != -1:#分布式训练
                 value_loss = int(loss.cpu().detach().numpy()[0] * 1000) / 1000

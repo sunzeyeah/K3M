@@ -2383,7 +2383,8 @@ class BertForMultiModalPreTraining_tri_stru(BertPreTrainedModel):
             #print(c_final.shape)#[8, 768]
             #print(c_final_neg.shape)#[8, 768]
         
-        struc_label=torch.tensor([1]*sequence_output_pv.shape[0]+[0]*sequence_output_pv.shape[0]).cuda(device=sequence_output_pv.device, non_blocking=True)
+        # struc_label=torch.tensor([1]*sequence_output_pv.shape[0]+[0]*sequence_output_pv.shape[0]).cuda(device=sequence_output_pv.device, non_blocking=True)
+        struc_label=torch.tensor([1]*sequence_output_pv.shape[0]+[0]*sequence_output_pv.shape[0])
         #print(struc_label)
         
         logits = self.struc_w_loss(torch.cat((c_final, c_final_neg),dim=0))

@@ -101,7 +101,7 @@ class Conceptual_Caption(RNGDataFlow):
 
 if __name__ == '__main__':
     """train"""#改数据 numfile以及num_caps
-    with open('./data/image_lmdb_json/df_train.csv') as f:
+    with open('./data/image_lmdb_json/df_train.csv', encoding="utf-8") as f:
         total_train_lines = sum(1 for line in f)
     
     ds = Conceptual_Caption(corpus_path='./data/image_features',filetype='train', num_caps = total_train_lines) 
@@ -110,9 +110,9 @@ if __name__ == '__main__':
 
     
     """validation"""
-    with open('./data/image_lmdb_json/df_val.csv') as f:
+    with open('./data/image_lmdb_json/df_val.csv', encoding="utf-8") as f:
         total_valid_lines = sum(1 for line in f)
     
-    ds = Conceptual_Caption(corpus_path='./data/image_features',filetype='dev', num_caps = total_valid_lines)
+    ds = Conceptual_Caption(corpus_path='./data/image_features', filetype='dev', num_caps = total_valid_lines)
     ds1 = PrefetchDataZMQ(ds, nr_proc=1)
     LMDBSerializer.save(ds1, './data/image_lmdb_json/validation_feat_all.lmdb')
