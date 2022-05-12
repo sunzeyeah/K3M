@@ -23,12 +23,12 @@ from detectron2.modeling.roi_heads.fast_rcnn import FastRCNNOutputLayers, FastRC
     fast_rcnn_inference_single_image
 
 
-# logging.basicConfig(
-#     format="%(asctime)s %(levelname)-4s [%(filename)S:%(lineno)s]   %(message)s",
-#     datefmt="%Y/%m/%d %H:%M:%S",
-#     level=logging.INFO
-# )
-# logger = logging.getLogger(__name__)
+logging.basicConfig(
+    format="%(asctime)s %(levelname)-4s [%(filename)s:%(lineno)s]  %(message)s",
+    datefmt="%Y/%m/%d %H:%M:%S",
+    level=logging.INFO
+)
+logger = logging.getLogger(__name__)
 
 
 NUM_OBJECTS = 36
@@ -100,9 +100,8 @@ def rename_images(args, dtype):
                 image_path_new = os.path.join(out_image, pic_name_full)
                 os.system(f"copy {image_path} {image_path_new}")
             except Exception as e:  #
-                # logger.error(f"[Error] rename images, item id: {item_id}", e)
-                print(f"[Error] rename images, item id: {item_id}")
-                traceback.print_exc()
+                logger.error(f"[Error] rename images, item id: {item_id}", e)
+                # traceback.print_exc()
                 continue
 
             # f_out.write('\t'.join([item_id, cate_name, title, pic_name_full, item_pvs]) + '\n')
@@ -271,11 +270,10 @@ def get_predictor(args):
     cfg.MODEL.WEIGHTS = args.cv_model_file
     # cfg.MODEL.WEIGHTS = "./faster-rcnn-pkl/faster_rcnn_from_caffe.pkl"
     # Device
-    cfg.MODEL.DEVICE = "cpu" if args.is_cuda else "cuda"
+    cfg.MODEL.DEVICE = "cuda" if args.is_cuda else "cpu"
 
     predictor = DefaultPredictor(cfg)
-    # logger.info(f"predictor: {predictor}")
-    print(f"predictor: {predictor}")
+    logger.info(f"predictor: {predictor}")
 
     return predictor
 
@@ -284,8 +282,7 @@ def generate_image_features(args, dtype):
     out_file = os.path.join(args.output_dir, f"image_features_{dtype}.tsv")
     out_image_pattern = os.path.join(args.output_dir, f"item_{dtype}_images", "*")
     out_image_paths = glob.glob(out_image_pattern)
-    # logger.info(f"[Step 3] Starting {dtype} image feature extraction, # images : {len(out_image_paths)}")
-    print(f"[Step 3] Starting {dtype} image feature extraction, # images : {len(out_image_paths)}")
+    logger.info(f"[Step 3] Starting {dtype} image feature extraction, # images : {len(out_image_paths)}")
 
     # get predictor
     predictor = get_predictor(args)
@@ -305,13 +302,11 @@ def generate_image_features(args, dtype):
                 continue
             writer.writerow(detection_feature)
         except cv2.error as e:
-            # logger.error(f"[CV2 ERROR] image_id: {image_id}", e)
-            print(f"[CV2 ERROR] Image Feature, image_id: {image_id}")
-            traceback.print_exc()
+            logger.error(f"[CV2 ERROR] image_id: {image_id}", e)
+            # traceback.print_exc()
         except Exception as e:
-            # logger.error(f"[ERROR] image_id: {image_id}", e)
-            print(f"[ERROR] Image Feature, image_id: {image_id}")
-            traceback.print_exc()
+            logger.error(f"[ERROR] image_id: {image_id}", e)
+            # traceback.print_exc()
 
 
 class Conceptual_Caption(td.RNGDataFlow):
@@ -321,19 +316,59 @@ class Conceptual_Caption(td.RNGDataFlow):
         """
         Same as in :class:`ILSVRC12`.
         """
-        # self.args = args
-        # self.file_type = file_type
+        self.args = args
+        self.file_type = file_type
         self.predictor = get_predictor(args)
         self.image_dir = os.path.join(args.data_dir, args.file_image.format(file_type))
         file_item_info = os.path.join(args.data_dir, args.file_item_info.format(file_type))
         self.lines = []
+        ct = 0
         with open(file_item_info, "r", encoding="utf-8") as r:
             while True:
                 line = r.readline()
                 if not line:
                     break
-                self.lines.append(line)
+                jd = json.loads(line.strip())
+                item_id = jd['item_id']
+                item_image_name = jd['item_image_name']
+                title = jd['title']
+                # TODO: pv字符串未作处理
+                item_pvs = jd['item_pvs']
+                cate_name = jd['cate_name']
+                image_id = f"{item_id}_{self.file_type}"
+                image_path = os.path.join(self.image_dir, item_image_name)
+                image = cv2.imread(image_path)
+                try:
+                    image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+                    image_rgb = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2BGR)
+                    detection_feature = get_detections_from_image(self.predictor, image_rgb)
+                    if detection_feature is None:
+                        continue
+                    image_h = detection_feature['image_h']
+                    image_w = detection_feature['image_w']
+                    num_boxes = detection_feature['num_boxes']
+                    boxes = detection_feature['boxes']
+                    features = detection_feature['features']
+                    cls_prob = detection_feature['cls_prob']
+                    # boxes = np.frombuffer(base64.b64decode(item['boxes'][2:-1]), dtype=np.float32).reshape(
+                    #     int(num_boxes), 4)
+                    # features = np.frombuffer(base64.b64decode(item['features'][2:-1]), dtype=np.float32).reshape(
+                    #     int(num_boxes), 2048)
+                    # cls_prob = np.frombuffer(base64.b64decode(item['cls_prob'][2:-1]), dtype=np.float32).reshape(int(num_boxes), 1601)
 
+                    self.lines.append([features, cls_prob, boxes, num_boxes, image_h, image_w, image_id, title, item_pvs, cate_name])
+                except cv2.error as e:
+                    logger.error(f"[CV2 ERROR] image_id: {image_id}", e)
+                    # traceback.print_exc()
+                except Exception as e:
+                    logger.error(f"[ERROR] image_id: {image_id}", e)
+                    # traceback.print_exc()
+                ct += 1
+                if ct % 100 == 0:
+                    logger.info(f"{file_type}: {ct} images processed")
+                    # break
+
+        self.num_lines = len(self.lines)
         if shuffle:
             random.shuffle(self.lines)
 
@@ -360,48 +395,11 @@ class Conceptual_Caption(td.RNGDataFlow):
         #     self.cap_pv_cls[image_id] = (pv, caption, category)
 
     def __len__(self):
-        return self.num_caps
+        return self.num_lines
 
     def __iter__(self):
         for line in self.lines:
-            jd = json.loads(line.strip())
-            item_id = jd['item_id']
-            item_image_name = jd['item_image_name']
-            title = jd['title']
-            # TODO: pv字符串未作处理
-            item_pvs = jd['item_pvs']
-            cate_name = jd['cate_name']
-            image_id = f"{item_id}_{self.file_type}"
-            image_path = os.path.join(self.image_dir, item_image_name)
-            image = cv2.imread(image_path)
-            # image_id = image_path.split(FILE_SYSTEM_SEP)[-1].split(".")[0]
-            try:
-                image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-                image_rgb = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2BGR)
-                detection_feature = get_detections_from_image(self.predictor, image_rgb)
-                if detection_feature is None:
-                    continue
-                image_h = detection_feature['image_h']
-                image_w = detection_feature['image_w']
-                num_boxes = detection_feature['num_boxes']
-                boxes = detection_feature['boxes']
-                features = detection_feature['features']
-                cls_prob = detection_feature['cls_prob']
-                # boxes = np.frombuffer(base64.b64decode(item['boxes'][2:-1]), dtype=np.float32).reshape(
-                #     int(num_boxes), 4)
-                # features = np.frombuffer(base64.b64decode(item['features'][2:-1]), dtype=np.float32).reshape(
-                #     int(num_boxes), 2048)
-                # cls_prob = np.frombuffer(base64.b64decode(item['cls_prob'][2:-1]), dtype=np.float32).reshape(int(num_boxes), 1601)
-
-                yield [features, cls_prob, boxes, num_boxes, image_h, image_w, image_id, title, item_pvs, cate_name]
-            except cv2.error as e:
-                # logger.error(f"[CV2 ERROR] image_id: {image_id}", e)
-                print(f"[CV2 ERROR] Image Feature, image_id: {image_id}")
-                traceback.print_exc()
-            except Exception as e:
-                # logger.error(f"[ERROR] image_id: {image_id}", e)
-                print(f"[ERROR] Image Feature, image_id: {image_id}")
-                traceback.print_exc()
+            yield line
 
 
 def generate_lmdb(args, dtype):
@@ -410,11 +408,14 @@ def generate_lmdb(args, dtype):
         ds = td.PrefetchDataZMQ(ds, nr_proc=1)
 
     out_file = os.path.join(args.output_dir, f"{dtype}_feat.lmdb")
+    if os.path.isfile(out_file):
+        os.remove(out_file)
+
     try:
         td.LMDBSerializer.save(ds, out_file)
     except Exception as e:
-        # print(e)
-        traceback.print_exc()
+        logger.error("[Error] LMDBSerializer saving", e)
+        # traceback.print_exc()
 
 
 def main():
@@ -437,11 +438,9 @@ def main():
     # logger.info("[Step 3] Finished extracting image features")
 
     # step 4: 生成lmdb文件
-    for dtype in ["train"]:
-    # for dtype in ["train", "valid"]:
+    for dtype in ["train", "valid"]:
         generate_lmdb(args, dtype)
-    # logger.info("[Step 4] Finished generating lmdb files")
-    print("Finished generating lmdb files")
+    logger.info("Finished generating lmdb files")
 
 
 if __name__ == '__main__':
