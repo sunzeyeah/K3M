@@ -273,7 +273,7 @@ def get_parser():
         "--if_pre_sampling", default=1, type=int, help="sampling strategy."
     )
 
-    return parser.parse_args()—
+    return parser.parse_args()
 
 
 def main():
@@ -898,4 +898,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()—
+    main()
