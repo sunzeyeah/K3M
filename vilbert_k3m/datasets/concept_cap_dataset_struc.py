@@ -227,22 +227,20 @@ class ConceptCapLoaderTrain_struc(object):
 
         if serializer == td.NumpySerializer:
             buffer = np.load(data_file, allow_pickle=True)['buffer']
-            ds = td.DataFromList(buffer, shuffle=False)
+            ds = td.DataFromList(buffer, shuffle=True)
         elif serializer == td.LMDBSerializer:
-            ds = serializer.load(data_file, shuffle=False)
+            ds = serializer.load(data_file, shuffle=True)
         else:
             ds = serializer.load(data_file)
         self.num_dataset = len(ds)
         # shuffle data
-        ds = td.LocallyShuffleData(ds, cache)
+        # ds = td.LocallyShuffleData(ds, cache)
 
         preprocess_function = BertPreprocessBatch(tokenizer, max_seq_len=max_seq_len, max_seq_len_pv=max_seq_len_pv, max_num_pv=max_num_pv,
                                                   max_region_len=max_region_len, visual_target=visual_target,
                                                   v_target_size=v_target_size, v_feature_size=v_feature_size,
                                                   v_loc_size=v_loc_size, objective=objective, visualization=visualization)
 
-        if not sys.platform.startswith("win"):
-            ds = td.PrefetchData(ds, cache, num_workers)
         ds = td.MapData(ds, preprocess_function)
         if not sys.platform.startswith("win"):
             ds = td.PrefetchDataZMQ(ds, num_workers)
@@ -364,9 +362,9 @@ class ConceptCapLoaderVal_struc(object):
 
     def __iter__(self):
         for batch in self.ds.get_data():
-            input_ids, input_mask, segment_ids, lm_label_ids, is_next, input_ids_pv, input_mask_pv, segment_ids_pv, \
-            lm_label_ids_pv, is_next_pv_v, is_next_pv_t,image_feat, image_loc, image_target, image_label, image_mask, \
-            masked_label, index_p, index_v, image_id = (
+            item_id, input_ids, input_mask, segment_ids, lm_label_ids, is_next, input_ids_pv, input_mask_pv, segment_ids_pv, \
+            lm_label_ids_pv, is_next_pv_v, is_next_pv_t, index_p, index_v, image_feat, image_loc, image_target, image_label, image_mask, \
+            masked_label = (
                 batch
             )
 
@@ -406,7 +404,7 @@ class ConceptCapLoaderVal_struc(object):
                 image_mask,
             )
 
-            yield tuple([torch.tensor(data) for data in batch] + [index_p, index_v, image_id])
+            yield tuple([torch.tensor(data) for data in batch] + [index_p, index_v, item_id])
 
     def __len__(self):
         return self.ds.size()
@@ -423,12 +421,10 @@ class BertPreprocessBatch(object):
             v_feature_size=2048,
             v_target_size=1601,
             v_loc_size=5,
-            split="Train",
             visual_target=0,
             visualization=False,
             objective=0,
     ):
-        self.split = split
         self.max_seq_len = max_seq_len
         self.max_seq_len_pv = max_seq_len_pv
         self.max_num_pv = max_num_pv

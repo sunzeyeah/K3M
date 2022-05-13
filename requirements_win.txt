@@ -20,6 +20,6 @@ sklearn
 jieba
 git+https://github.com/facebookresearch/fvcore.git
 git+https://github.com/cocodataset/cocoapi.git#subdirectory=PythonAPI
-git+https://github.com/airsplay/py-bottom-up-attention.git
+git+https://github.com/sunzeyeah/detectron2.git
 cython
 opencv-python

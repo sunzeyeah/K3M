@@ -2404,10 +2404,11 @@ class BertForMultiModalPreTraining_tri_stru(BertPreTrainedModel):
         
         # TODO: 区分机器是否有GPU
         device = sequence_output_pv.device
-        if device == "cpu":
+        if device.type == "cpu":
             struc_label = torch.tensor([1]*sequence_output_pv.shape[0]+[0]*sequence_output_pv.shape[0])
         else:
-            struc_label=torch.tensor([1]*sequence_output_pv.shape[0]+[0]*sequence_output_pv.shape[0]).cuda(device=sequence_output_pv.device, non_blocking=True)
+            struc_label=torch.tensor([1]*sequence_output_pv.shape[0]+[0]*sequence_output_pv.shape[0]).\
+                cuda(device=sequence_output_pv.device, non_blocking=True)
 
         logits = self.struc_w_loss(torch.cat((c_final, c_final_neg), dim=0))
         loss_struc = self.loss_fct_struc(logits, struc_label)

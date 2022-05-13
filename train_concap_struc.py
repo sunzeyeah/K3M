@@ -99,7 +99,7 @@ def get_parser():
     parser.add_argument("--num_train_epochs", default=6.0, type=float, help="Total number of training epochs to perform.")
     parser.add_argument("--start_epoch", default=0, type=float, help="Total number of training epochs to perform.")
     parser.add_argument("--no_cuda", action="store_true", help="Whether not to use CUDA when available")
-    parser.add_argument("--num_workers", default=25, type=int, help="Number of workers in the dataloader.")
+    parser.add_argument("--num_workers", default=2, type=int, help="Number of workers in the dataloader.")
     parser.add_argument("--if_pre_sampling", default=1, type=int, help="sampling strategy, 融合策略 0.mean(交互+不交互) 1.sample1(交互,不交互) 2.sample2(交互,不交互)  3.仅交互")
     parser.add_argument("--with_coattention", action="store_true", help="whether pair loss.")
     parser.add_argument("--objective", default=2, type=int, help="which objective to use \
@@ -616,7 +616,7 @@ def main():
                 num_batches = len(validation_dataset)
 
                 for step, batch in enumerate(validation_dataset):
-                    image_ids = batch[-1]
+                    # image_ids = batch[-1]
                     index_p = torch.tensor(batch[-3])
                     index_v = torch.tensor(batch[-2])
                     batch = tuple(batch[:-3])

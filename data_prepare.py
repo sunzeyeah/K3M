@@ -313,13 +313,12 @@ def generate_image_features(args, dtype):
 class Conceptual_Caption(td.RNGDataFlow):
     """
     """
-    def __init__(self, args, file_type, shuffle=True):
+    def __init__(self, args, file_type, predictor, shuffle=True):
         """
         Same as in :class:`ILSVRC12`.
         """
         self.args = args
         self.file_type = file_type
-        self.predictor = get_predictor(args)
         self.image_dir = os.path.join(args.data_dir, args.file_image.format(file_type))
         file_item_info = os.path.join(args.data_dir, args.file_item_info.format(file_type))
         self.lines = []
@@ -347,7 +346,7 @@ class Conceptual_Caption(td.RNGDataFlow):
                     image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
                     image_rgb = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2BGR)
                     # 抽取图像特征
-                    detection_feature = get_detections_from_image(self.predictor, image_rgb)
+                    detection_feature = get_detections_from_image(predictor, image_rgb)
                     if detection_feature is None:
                         continue
                     image_h = detection_feature['image_h']
@@ -365,9 +364,9 @@ class Conceptual_Caption(td.RNGDataFlow):
                     logger.error(f"[ERROR] image_id: {image_id}", e)
                     # traceback.print_exc()
                 ct += 1
-                if ct % 100 == 0:
+                if ct % 10 == 0:
                     logger.info(f"{file_type}: {ct} images processed")
-                    # break
+                    break
 
         self.num_lines = len(self.lines)
         if shuffle:
@@ -404,13 +403,14 @@ class Conceptual_Caption(td.RNGDataFlow):
 
 
 def serialize(args, dtype):
-    ds = Conceptual_Caption(args, dtype)
+    predictor = get_predictor(args)
+    ds = Conceptual_Caption(args, dtype, predictor)
 
     if sys.platform.startswith("win"):
         out_file = os.path.join(args.output_dir, f"{dtype}_feat.npz")
         serializer = td.NumpySerializer
     else:
-        ds = td.PrefetchDataZMQ(ds, nr_proc=1)
+        ds = td.PrefetchDataZMQ(ds, 1)
         out_file = os.path.join(args.output_dir, f"{dtype}_feat.lmdb")
         serializer = td.LMDBSerializer
 
