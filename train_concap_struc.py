@@ -83,6 +83,7 @@ def get_parser():
     parser.add_argument("--pretrained_model_weights", default="bert-base-uncased_weight_name.json", type=str, help="预训练模型的权重名称文件")
     parser.add_argument("--file_checkpoint", default="", type=str, help="Resume from checkpoint")
     parser.add_argument("--file_state_dict", default="", type=str, help="resume from only model")
+    parser.add_argument("--log_steps", default=1, type=int, help="log model training process every n steps")
     # parser.add_argument("--baseline", action="store_true", help="Wheter to use the baseline model (single bert).")
     parser.add_argument("--distributed", action="store_true", help="whether use chunck for parallel training.")
     parser.add_argument("--cache", default=5000,  type=int, help="whether use chunck for parallel training.")
@@ -553,8 +554,9 @@ def main():
                     value_masked_loss_pv = int(masked_loss_pv.cpu().detach().numpy()* 1000) / 1000
                     value_loss_tri = int(loss_tri.cpu().detach().numpy() * 1000) / 1000
 
-                logger.info(f"[Epoch-{epoch} Step-{step}] loss: {value_loss} loss_t: {value_masked_loss_t}, "
-                            f"loss_v: {value_masked_loss_v}, loss_pv: {value_masked_loss_pv}, loss_tri: {value_loss_tri}")
+                if (step + 1) % args.log_steps == 0:
+                    logger.info(f"[Epoch-{epoch} Step-{step}] loss: {value_loss} loss_t: {value_masked_loss_t}, "
+                                f"loss_v: {value_masked_loss_v}, loss_pv: {value_masked_loss_pv}, loss_tri: {value_loss_tri}")
 
                 if args.gradient_accumulation_steps > 1:
                     loss = loss / args.gradient_accumulation_steps
