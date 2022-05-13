@@ -12,6 +12,7 @@ import random
 import csv
 import torch
 import glob
+import jieba
 import numpy as np
 import tensorpack.dataflow as td
 
@@ -332,9 +333,13 @@ class Conceptual_Caption(td.RNGDataFlow):
                 item_id = jd['item_id']
                 item_image_name = jd['item_image_name']
                 title = jd['title']
-                # TODO: pv字符串未作处理
                 item_pvs = jd['item_pvs']
                 cate_name = jd['cate_name']
+                item_pvs = item_pvs.replace("#", "")
+                if not item_pvs.endswith(";"):
+                    item_pvs += ';'
+                item_pvs = " ".join(jieba.cut(item_pvs))
+                title = " ".join(jieba.cut(title))
                 image_id = f"{item_id}_{self.file_type}"
                 image_path = os.path.join(self.image_dir, item_image_name)
                 image = cv2.imread(image_path)
@@ -352,7 +357,7 @@ class Conceptual_Caption(td.RNGDataFlow):
                     features = detection_feature['features']
                     cls_prob = detection_feature['cls_prob']
                     # 图像与其余模态混合存储
-                    self.lines.append([features, cls_prob, boxes, num_boxes, image_h, image_w, image_id, title, item_pvs, cate_name])
+                    self.lines.append([item_id, title, item_pvs, cate_name, image_h, image_w, num_boxes, boxes, features, cls_prob])
                 except cv2.error as e:
                     logger.error(f"[CV2 ERROR] image_id: {image_id}", e)
                     # traceback.print_exc()
@@ -402,8 +407,8 @@ def serialize(args, dtype):
     ds = Conceptual_Caption(args, dtype)
 
     if sys.platform.startswith("win"):
-        out_file = os.path.join(args.output_dir, f"{dtype}_feat.tfrecord")
-        serializer = td.TFRecordSerializer
+        out_file = os.path.join(args.output_dir, f"{dtype}_feat.npz")
+        serializer = td.NumpySerializer
     else:
         ds = td.PrefetchDataZMQ(ds, nr_proc=1)
         out_file = os.path.join(args.output_dir, f"{dtype}_feat.lmdb")
@@ -412,11 +417,9 @@ def serialize(args, dtype):
     if os.path.isfile(out_file):
         os.remove(out_file)
 
+    logger.info(f"{dtype} data length: {len(ds)}")
     try:
         serializer.save(ds, out_file)
-        # td.TFRecordSerializer.save(ds, out_file)
-        # td.NumpySerializer.save(ds, out_file)
-        # td.HDF5Serializer.save(ds, out_file)
     except Exception as e:
         logger.error("[Error] serialization", e)
         # traceback.print_exc()
@@ -444,7 +447,7 @@ def main():
     # step 4: 抽取图像特征，和其余模态混合，序列化存储
     for dtype in ["train", "valid"]:
         serialize(args, dtype)
-    logger.info("Finished generating lmdb files")
+    logger.info("Finished serializing files")
 
 
 if __name__ == '__main__':
