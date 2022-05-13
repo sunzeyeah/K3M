@@ -26,6 +26,11 @@ import numpy as np
 from sklearn import metrics
 import time
 
+logging.basicConfig(
+    format="%(asctime)s %(levelname)-4s [%(filename)s:%(lineno)s]  %(message)s",
+    datefmt="%Y/%m/%d %H:%M:%S",
+    level=logging.INFO
+)
 logger = logging.getLogger(__name__)
 
 BERT_PRETRAINED_MODEL_ARCHIVE_MAP = {
@@ -1107,15 +1112,14 @@ class BertConnectionLayer_two_text(nn.Module):
 
 
 class BertEncoder_tri(nn.Module):
+    ''' Need to extract three things:
+        (1) text bert layer: BertLayer
+        (2) vision bert layer: BertImageLayer
+        (3) Bi-Attention: Given the output of two bertlayer, perform bi-directional attention and add on two layers.
+
+    '''
     def __init__(self, config):
         super(BertEncoder_tri, self).__init__()
-
-        # in the bert encoder, we need to extract three things here.
-        # text bert layer: BertLayer
-        # vision bert layer: BertImageLayer
-        # Bi-Attention: Given the output of two bertlayer, perform bi-directional
-        # attention and add on two layers.
-
         self.FAST_MODE = config.fast_mode
         self.with_coattention = config.with_coattention
         self.v_biattention_id = config.v_biattention_id  # [0, 1, 2, 3, 4, 5],
@@ -2135,9 +2139,7 @@ class BertImageEmbeddings(nn.Module):
         loc_embeddings = self.image_location_embeddings(input_loc)
 
         # TODO: we want to make the padding_idx == 0, however, with custom initilization, it seems it will have a bias.
-        # Let's do masking for now
         embeddings = self.LayerNorm(img_embeddings + loc_embeddings)
-        # embeddings = self.LayerNorm(img_embeddings+loc_embeddings)
         embeddings = self.dropout(embeddings)
 
         return embeddings
@@ -2157,13 +2159,13 @@ class BertForMultiModalPreTraining_tri_stru(BertPreTrainedModel):
 
         self.if_pre_sampling = config.if_pre_sampling
         if self.if_pre_sampling == 0:
-            print('fusion strategy 0, individual + interactive -- mean')
+            logger.info('fusion strategy 0, individual + interactive -- mean')
         elif self.if_pre_sampling == 1:
-            print('fusion strategy 1, individual + interactive -- hard')
+            logger.info('fusion strategy 1, individual + interactive -- hard')
         elif self.if_pre_sampling == 2:
-            print('fusion strategy 2, individual + interactive -- soft')
+            logger.info('fusion strategy 2, individual + interactive -- soft')
         elif self.if_pre_sampling == 3:
-            print('fusion strategy 3, interactive')
+            logger.info('fusion strategy 3, interactive')
         else:
             pass
 
@@ -2195,7 +2197,7 @@ class BertForMultiModalPreTraining_tri_stru(BertPreTrainedModel):
         self.struc_w_loss = nn.Linear(config.hidden_size, 2)
         self.loss_fct_struc = CrossEntropyLoss(ignore_index=-1)
 
-        print("model's visual target is ", config.visual_target)
+        # print("model's visual target is ", config.visual_target)
 
         if self.visual_target == 0:
             self.vis_criterion = nn.KLDivLoss(reduction="none")
@@ -2335,12 +2337,31 @@ class BertForMultiModalPreTraining_tri_stru(BertPreTrainedModel):
         pooled_output_pv = torch.mean(sequence_output_pv[:, 1:, :], dim=1)  # 768
 
         return sequence_output_v, sequence_output_t, sequence_output_pv, pooled_output_v, pooled_output_t, pooled_output_pv
-    def structure_aggregator(self, pooled_output_v, pooled_output_t, pooled_output_pv, sequence_output_pv, index_p, index_v, ):
-        # the number of attention heads of structure aggregator in paper is 8, here is 1. (We found using 1 attetion head has similar performance as using 8 heads, and it's more efficient.)
+
+    def structure_aggregator(self, pooled_output_v, pooled_output_t, pooled_output_pv, sequence_output_pv, index_p, index_v):
+        ''' Compute 3 values:
+            (1) initial entity embedding = pooled image embedding + pooled title embedding + pooled knowledge graph embedding
+            (2) final entity embedding = initial entity embedding + attention-weighted triplets embeddings, aka Structure Aggregation Module
+            (3) Link Prediction Modeling (LPM) loss
+
+        :param pooled_output_v: pooled image embedding
+        :param pooled_output_t: pooled text embedding
+        :param pooled_output_pv: pooled knowledge graph embedding
+        :param sequence_output_pv: sequence knowledge graph embeddings (for LPM loss)
+        :param index_p: index of knowledge graph sequence
+        :param index_v: index of image
+
+        :return:
+            c_initial: initial entity embedding
+            c_final: final entity embedding
+            loss_struct: LPM loss
+        '''
+        # the number of attention heads of structure aggregator in paper is 8, here is 1.
+        # We found using 1 attetion head has similar performance as using 8 heads, and it's more efficient.
         
         #--------  structure aggregate module ------------
-        c_initial = (pooled_output_v + pooled_output_t + pooled_output_pv)/3#[batch_size,768]
-        #sequence_output_pv [batch_size,48,768]
+        c_initial = (pooled_output_v + pooled_output_t + pooled_output_pv)/3 #[batch_size,768]
+        #sequence_output_pv [batch_size, 48, 768]
         
         # ---- c_initial, sequence_output_pv, index_p, index_v --> c_final & loss_tri------
         #print(index_p.shape)#(8, 10, 2)
@@ -2352,49 +2373,47 @@ class BertForMultiModalPreTraining_tri_stru(BertPreTrainedModel):
         
         for i in range(sequence_output_pv.shape[0]):# item
             for j in range(index_p.shape[1]):# p
-                if index_p[i,j,0]==0:
+                if index_p[i, j, 0] == 0:
                     break
-                p=torch.mean(sequence_output_pv[i,:,:].index_select(dim=0, index=index_p[i,j,:]), dim=0)##[768] , keepdim=True
-                v=torch.mean(sequence_output_pv[i,:,:].index_select(dim=0, index=index_v[i,j,:]), dim=0)
-                if j==0:
-                    t=torch.unsqueeze(self.struc_w1(torch.cat((c_initial[i], p, v),dim=0)),0)
+                p = torch.mean(sequence_output_pv[i, :, :].index_select(dim=0, index=index_p[i, j, ]), dim=0)##[768] , keepdim=True
+                v = torch.mean(sequence_output_pv[i, :, :].index_select(dim=0, index=index_v[i, j, :]), dim=0)
+                if j == 0:
+                    t = torch.unsqueeze(self.struc_w1(torch.cat((c_initial[i], p, v), dim=0)), 0)
                 else:
-                    t=torch.cat((t, torch.unsqueeze(self.struc_w1(torch.cat((c_initial[i], p, v),dim=0)),0)), dim=0)
-                
-            
+                    t = torch.cat((t, torch.unsqueeze(self.struc_w1(torch.cat((c_initial[i], p, v), dim=0)), 0)), dim=0)
+
             try:
-                b=self.struc_w2(F.leaky_relu(t))
+                b = self.struc_w2(F.leaky_relu(t))
             except:
-                t=torch.unsqueeze(c_initial[i],0)
-                b=self.struc_w2(F.leaky_relu(t))
-                
+                t = torch.unsqueeze(c_initial[i], 0)
+                b = self.struc_w2(F.leaky_relu(t))
+
+            # attention
+            atten = F.softmax(b, dim=0)
             
-            #attention
-            atten=F.softmax(b,dim=0) 
-            
-            if i==0:# batch
-                c_final=torch.unsqueeze(c_initial[i] + self.struc_w3(torch.sum(atten*t,dim=0)), 0)
-                c_final_neg=torch.unsqueeze(c_initial[i+1] + self.struc_w3(torch.sum(atten*t,dim=0)), 0)#错位构造负样本
+            if i == 0:
+                c_final = torch.unsqueeze(c_initial[i] + self.struc_w3(torch.sum(atten*t, dim=0)), 0)
+                c_final_neg = torch.unsqueeze(c_initial[i+1] + self.struc_w3(torch.sum(atten*t, dim=0)), 0)#错位构造负样本
             else:
-                c_final=torch.cat((c_final, torch.unsqueeze(c_initial[i] + self.struc_w3(torch.sum(atten*t, dim=0)), 0)), dim=0)
-                c_final_neg=torch.cat((
-                    c_final_neg, torch.unsqueeze(c_initial[(i+1)%sequence_output_pv.shape[0]] + self.struc_w3(torch.sum( atten*t, dim=0)), 0)), dim=0)
+                c_final = torch.cat((c_final, torch.unsqueeze(c_initial[i] + self.struc_w3(torch.sum(atten*t, dim=0)), 0)), dim=0)
+                c_final_neg = torch.cat((
+                    c_final_neg, torch.unsqueeze(c_initial[(i+1) % sequence_output_pv.shape[0]] + self.struc_w3(torch.sum(atten*t, dim=0)), 0)), dim=0)
                 
-            #print(c_final.shape)#[8, 768]
-            #print(c_final_neg.shape)#[8, 768]
+            #print(c_final.shape) #[8, 768]
+            #print(c_final_neg.shape) #[8, 768]
         
-        # struc_label=torch.tensor([1]*sequence_output_pv.shape[0]+[0]*sequence_output_pv.shape[0]).cuda(device=sequence_output_pv.device, non_blocking=True)
-        struc_label=torch.tensor([1]*sequence_output_pv.shape[0]+[0]*sequence_output_pv.shape[0])
-        #print(struc_label)
-        
-        logits = self.struc_w_loss(torch.cat((c_final, c_final_neg),dim=0))
-        #print(logits)
-        
-        loss_struc=self.loss_fct_struc(logits, struc_label)
-        #print(loss_struc)
-        #5/0
+        # TODO: 区分机器是否有GPU
+        device = sequence_output_pv.device
+        if device == "cpu":
+            struc_label = torch.tensor([1]*sequence_output_pv.shape[0]+[0]*sequence_output_pv.shape[0])
+        else:
+            struc_label=torch.tensor([1]*sequence_output_pv.shape[0]+[0]*sequence_output_pv.shape[0]).cuda(device=sequence_output_pv.device, non_blocking=True)
+
+        logits = self.struc_w_loss(torch.cat((c_final, c_final_neg), dim=0))
+        loss_struc = self.loss_fct_struc(logits, struc_label)
+        logger.debug(f"LPM loss: {loss_struc}")
+
         return c_initial, c_final, loss_struc
-        # -------------------------------------------------------------
     
     def forward(
             self,
@@ -2449,15 +2468,14 @@ class BertForMultiModalPreTraining_tri_stru(BertPreTrainedModel):
             all_attention_mask_t_pv,
             individual_txt, individual_pv, individual_v)
         
-        
         c_initial, c_final, loss_struc = self.structure_aggregator(pooled_output_v, pooled_output_t, pooled_output_pv, sequence_output_pv, index_p, index_v, )
         
         if True:  
-            prediction_scores_t, prediction_scores_v, prediction_scores_pv, seq_relationship_score, seq_relationship_score_t_pv, seq_relationship_score_pv_v, seq_relationship_score_t_v_pv = self.cls(
+            prediction_scores_t, prediction_scores_v, prediction_scores_pv, seq_relationship_score, seq_relationship_score_t_pv, \
+            seq_relationship_score_pv_v, seq_relationship_score_t_v_pv = self.cls(
                 sequence_output_t, sequence_output_v, pooled_output_t, pooled_output_v, sequence_output_pv,
                 pooled_output_pv,
             )
-
         else:
             prediction_scores_t, prediction_scores_v, seq_relationship_score = self.cls(
                 sequence_output_t, sequence_output_v, pooled_output_t, pooled_output_v
@@ -2476,7 +2494,6 @@ class BertForMultiModalPreTraining_tri_stru(BertPreTrainedModel):
                 ) / max(
                     torch.sum((image_label == 1).unsqueeze(2).expand_as(img_loss)), 1
                 )
-
             elif self.visual_target == 0:
                 img_loss = self.vis_criterion(
                     F.log_softmax(prediction_scores_v, dim=2), image_target
@@ -2538,22 +2555,22 @@ class BertForMultiModalPreTraining_tri_stru(BertPreTrainedModel):
                 masked_img_loss = self.vis_criterion(
                     score, input_ids.new(score.size(0)).zero_()
                 )
-            
+
             masked_lm_loss = self.loss_fct(
                 prediction_scores_t.view(-1, self.config.vocab_size),
-                masked_lm_labels.view(-1),
+                masked_lm_labels.view(-1).to(device=device, dtype=torch.long, non_blocking=True)
             )
 
             if True:  # pv对的损失，和title的很像
                 masked_lm_loss_pv = self.loss_fct(
                     prediction_scores_pv.view(-1, self.config.vocab_size),
-                    masked_lm_labels_pv.view(-1),
+                    masked_lm_labels_pv.view(-1).to(device=device, dtype=torch.long, non_blocking=True)
                 )
 
                 next_sentence_label_pv_t_v = 1 - 1 * (
                         (next_sentence_label + next_sentence_label_pv_v + next_sentence_label_pv_t) == 0)
-                next_sentence_loss_t_v_pv = self.loss_fct(
-                    seq_relationship_score_t_v_pv.view(-1, 2), next_sentence_label_pv_t_v.view(-1)
+                next_sentence_loss_t_v_pv = self.loss_fct(seq_relationship_score_t_v_pv.view(-1, 2),
+                                                          next_sentence_label_pv_t_v.view(-1).to(device=device, dtype=torch.long, non_blocking=True)
                 )
 
                 return (
