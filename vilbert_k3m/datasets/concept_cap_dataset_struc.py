@@ -30,9 +30,9 @@ msgpack_numpy.patch()
 MAX_MSGPACK_LEN = 1000000000
 
 logging.basicConfig(
-    format="%(asctime)s - %(levelname)s - %(name)s -   %(message)s",
-    datefmt="%m/%d/%Y %H:%M:%S",
-    level=logging.INFO,
+    format="%(asctime)s %(levelname)-4s [%(filename)s:%(lineno)s]  %(message)s",
+    datefmt="%Y/%m/%d %H:%M:%S",
+    level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
@@ -97,34 +97,20 @@ class InputExample(object):
             image_target=None,
             caption=None,
             is_next=None,
-
             pv=None,  # add
             is_next_pv_v=None,
             is_next_pv_t=None,
-
             lm_labels=None,
-
             lm_labels_pv=None,
-
             image_loc=None,
             num_boxes=None,
             overlaps=None,
     ):
-        """Constructs a InputExample.
-        Args:
-            guid: Unique id for the example.
-            tokens_a: string. The untokenized text of the first sequence. For single
-            sequence tasks, only this sequence must be specified.
-            tokens_b: (Optional) string. The untokenized text of the second sequence.
-            Only must be specified for sequence pair tasks.
-            label: (Optional) string. The label of the example. This should be
-            specified for train and dev examples, but not for test examples.
-        """
         self.image_feat = image_feat
         self.caption = caption
         self.is_next = is_next  # nextSentence
 
-        self.pv=pv#add
+        self.pv = pv#add
         self.is_next_pv_v=is_next_pv_v
         self.is_next_pv_t = is_next_pv_t
 
@@ -210,71 +196,57 @@ class ConceptCapLoaderTrain_struc(object):
             to the GPU for you (necessary because this lets us to uint8 conversion on the
             GPU, which is faster).
     """
-
     def __init__(
             self,
             corpus_path,
+            file_name,
             tokenizer,
-            bert_model,
-            seq_len,
-            seq_len_pv=None,
-            encoding="utf-8",
+            max_seq_len=32,
+            max_seq_len_pv=32,
+            max_num_pv=20,
+            max_region_len=36,
+            v_feature_size=2048,
+            v_target_size=1601,
+            v_loc_size=5,
             visual_target=0,
-            hard_negative=False,
             batch_size=512,
-            shuffle=False,
             num_workers=25,
             cache=10000,
-            drop_last=False,
-            cuda=False,
             local_rank=-1,
             objective=0,
             visualization=False,
-            train_lmdb_file="training_feat_all.lmdb",
+            serializer=td.LMDBSerializer,
     ):
-        TRAIN_DATASET_SIZE = 3119449
-
         if dist.is_available() and local_rank != -1:
-
-            num_replicas = dist.get_world_size()
+            # num_replicas = dist.get_world_size()
             rank = dist.get_rank()
-
-            lmdb_file = os.path.join(
-                corpus_path, "training_feat_part_" + str(rank) + ".lmdb"
-            )
+            data_file = os.path.join(corpus_path, file_name.format(rank))
         else:
-            lmdb_file = os.path.join(corpus_path, train_lmdb_file)
-            # lmdb_file = os.path.join(corpus_path, "validation_feat_all.lmdb")
+            data_file = os.path.join(corpus_path, file_name)
+            logger.debug(f"Loading from {data_file}")
 
-            print("Loading from %s" % lmdb_file)
-
-        ds = td.LMDBSerializer.load(lmdb_file, shuffle=False)
+        if serializer == td.NumpySerializer:
+            buffer = np.load(data_file, allow_pickle=True)['buffer']
+            ds = td.DataFromList(buffer, shuffle=False)
+        elif serializer == td.LMDBSerializer:
+            ds = serializer.load(data_file, shuffle=False)
+        else:
+            ds = serializer.load(data_file)
         self.num_dataset = len(ds)
+        # shuffle data
         ds = td.LocallyShuffleData(ds, cache)
-        caption_path = os.path.join(corpus_path, "caption_train.json")
-        pv_path = os.path.join(corpus_path, "pv_train.json")
-        # caption_path = os.path.join(corpus_path, "caption_val.json")
 
-        preprocess_function = BertPreprocessBatch(
-            caption_path,
-            pv_path,
-            tokenizer,
-            bert_model,
-            seq_len,
-            36,
-            self.num_dataset,
-            seq_len_pv=seq_len_pv,
-            encoding="utf-8",
-            visual_target=visual_target,
-            objective=objective,
-        )
+        preprocess_function = BertPreprocessBatch(tokenizer, max_seq_len=max_seq_len, max_seq_len_pv=max_seq_len_pv, max_num_pv=max_num_pv,
+                                                  max_region_len=max_region_len, visual_target=visual_target,
+                                                  v_target_size=v_target_size, v_feature_size=v_feature_size,
+                                                  v_loc_size=v_loc_size, objective=objective, visualization=visualization)
 
-        # ds = td.PrefetchData(ds, 5000, 1)
+        if not sys.platform.startswith("win"):
+            ds = td.PrefetchData(ds, cache, num_workers)
         ds = td.MapData(ds, preprocess_function)
-        # ds = td.PrefetchDataZMQ(ds, num_workers)
-        # print("batch_size",batch_size)
+        if not sys.platform.startswith("win"):
+            ds = td.PrefetchDataZMQ(ds, num_workers)
         self.ds = td.BatchData(ds, batch_size)
-        # self.ds = ds
         self.ds.reset_state()
 
         self.batch_size = batch_size
@@ -283,13 +255,13 @@ class ConceptCapLoaderTrain_struc(object):
     def __iter__(self):
 
         for batch in self.ds.get_data():
-            input_ids, input_mask, segment_ids, lm_label_ids, is_next, input_ids_pv, input_mask_pv, segment_ids_pv, lm_label_ids_pv, is_next_pv_v, is_next_pv_t,image_feat, image_loc, image_target, image_label, image_mask, masked_label, index_p, index_v, image_id = (
+            item_id, input_ids, input_mask, segment_ids, lm_label_ids, is_next, input_ids_pv, input_mask_pv, segment_ids_pv, \
+            lm_label_ids_pv, is_next_pv_v, is_next_pv_t, index_p, index_v, image_feat, image_loc, image_target, image_label, image_mask,\
+            masked_label = (
                 batch
             )
 
-
             batch_size = input_ids.shape[0]
-
             sum_count = np.sum(masked_label == 0, axis=1, keepdims=True)
             sum_count[sum_count == 0] = 1
             g_image_feat = np.sum(image_feat, axis=1) / sum_count
@@ -297,14 +269,12 @@ class ConceptCapLoaderTrain_struc(object):
                 [np.expand_dims(g_image_feat, axis=1), image_feat], axis=1
             )
             image_feat = np.array(image_feat, dtype=np.float32)
-
             g_image_loc = np.repeat(
                 np.array([[0, 0, 1, 1, 1]], dtype=np.float32), batch_size, axis=0
             )
             image_loc = np.concatenate(
                 [np.expand_dims(g_image_loc, axis=1), image_loc], axis=1
             )
-
             image_loc = np.array(image_loc, dtype=np.float32)
             g_image_mask = np.repeat(np.array([[1]]), batch_size, axis=0)
             image_mask = np.concatenate([g_image_mask, image_mask], axis=1)
@@ -315,9 +285,7 @@ class ConceptCapLoaderTrain_struc(object):
                 segment_ids,
                 lm_label_ids,
                 is_next,
-
                 input_ids_pv, input_mask_pv, segment_ids_pv, lm_label_ids_pv, is_next_pv_v, is_next_pv_t,
-
                 image_feat,
                 image_loc,
                 image_target,
@@ -325,8 +293,7 @@ class ConceptCapLoaderTrain_struc(object):
                 image_mask,
             )
 
-
-            yield tuple([torch.tensor(data) for data in batch] + [index_p, index_v, image_id])
+            yield tuple([torch.tensor(data) for data in batch] + [index_p, index_v, item_id])
 
     def __len__(self):
         return self.ds.size()
@@ -358,58 +325,50 @@ class ConceptCapLoaderVal_struc(object):
     def __init__(
             self,
             corpus_path,
+            file_name,
             tokenizer,
-            bert_model,
-            seq_len,
-            seq_len_pv=None,
-            encoding="utf-8",
+            max_seq_len=32,
+            max_seq_len_pv=32,
+            max_num_pv=20,
+            max_region_len=36,
+            v_feature_size=2048,
+            v_target_size=1601,
+            v_loc_size=5,
             visual_target=0,
             batch_size=512,
-            shuffle=False,
-            num_workers=25,
-            cache=5000,
-            drop_last=False,
-            cuda=False,
             objective=0,
             visualization=False,
+            serializer=td.LMDBSerializer
     ):
-        lmdb_file = os.path.join(corpus_path, "validation_feat_all.lmdb")
-        caption_path = os.path.join(corpus_path, "caption_val.json")
-        pv_path = os.path.join(corpus_path, "pv_val.json")
+        data_file = os.path.join(corpus_path, file_name)
+        logger.debug(f"Loading from {data_file}")
 
-        print("Loading from %s" % lmdb_file)
-
-        ds = td.LMDBSerializer.load(lmdb_file, shuffle=False)
+        if serializer == td.NumpySerializer:
+            buffer = np.load(data_file, allow_pickle=True)['buffer']
+            ds = td.DataFromList(buffer, shuffle=False)
+        elif serializer == td.LMDBSerializer:
+            ds = serializer.load(data_file, shuffle=False)
+        else:
+            ds = serializer.load(data_file)
         self.num_dataset = len(ds)
-        preprocess_function = BertPreprocessBatch(
-            caption_path,
-            pv_path,
-            tokenizer,
-            bert_model,
-            seq_len,
-            36,
-            self.num_dataset,
-            seq_len_pv=seq_len_pv,
-            encoding="utf-8",
-            visual_target=visual_target,
-            visualization=visualization,
-            objective=objective,
-        )
+        preprocess_function = BertPreprocessBatch(tokenizer, max_seq_len=max_seq_len, max_seq_len_pv=max_seq_len_pv, max_num_pv=max_num_pv,
+                                                  max_region_len=max_region_len, visual_target=visual_target,
+                                                  v_target_size=v_target_size, v_feature_size=v_feature_size,
+                                                  v_loc_size=v_loc_size, visualization=visualization, objective=objective)
 
         ds = td.MapData(ds, preprocess_function)
         self.ds = td.BatchData(ds, batch_size)
         self.ds.reset_state()
 
         self.batch_size = batch_size
-        self.num_workers = num_workers
 
     def __iter__(self):
         for batch in self.ds.get_data():
-            
-            input_ids, input_mask, segment_ids, lm_label_ids, is_next, input_ids_pv, input_mask_pv, segment_ids_pv, lm_label_ids_pv, is_next_pv_v, is_next_pv_t,image_feat, image_loc, image_target, image_label, image_mask, masked_label, index_p, index_v, image_id = (
+            input_ids, input_mask, segment_ids, lm_label_ids, is_next, input_ids_pv, input_mask_pv, segment_ids_pv, \
+            lm_label_ids_pv, is_next_pv_v, is_next_pv_t,image_feat, image_loc, image_target, image_label, image_mask, \
+            masked_label, index_p, index_v, image_id = (
                 batch
             )
-
 
             batch_size = input_ids.shape[0]
             sum_count = np.sum(masked_label == 0, axis=1, keepdims=True)
@@ -456,28 +415,29 @@ class ConceptCapLoaderVal_struc(object):
 class BertPreprocessBatch(object):
     def __init__(
             self,
-            caption_path,
-            pv_path,
             tokenizer,
-            bert_model,
-            seq_len,
-            region_len,
-            data_size,
-            seq_len_pv=None,
+            max_seq_len=32,
+            max_seq_len_pv=32,
+            max_num_pv=20,
+            max_region_len=36,
+            v_feature_size=2048,
+            v_target_size=1601,
+            v_loc_size=5,
             split="Train",
-            encoding="utf-8",
             visual_target=0,
             visualization=False,
             objective=0,
     ):
-
         self.split = split
-        self.seq_len = seq_len
-        self.seq_len_pv = seq_len_pv
-        self.region_len = region_len
+        self.max_seq_len = max_seq_len
+        self.max_seq_len_pv = max_seq_len_pv
+        self.max_num_pv = max_num_pv
+        self.max_region_len = max_region_len
+        self.v_feature_size = v_feature_size
+        self.v_target_size = v_target_size
+        self.v_loc_size = v_loc_size
         self.tokenizer = tokenizer
         self.visual_target = visual_target
-        self.num_caps = data_size
         self.captions = []#[i[1] for i in json.load(open(caption_path, "r"))]
         self.pvs = []#[i[1] for i in json.load(open(pv_path, "r"))]
         self.pvs_len = len(self.pvs)
@@ -485,37 +445,32 @@ class BertPreprocessBatch(object):
         # self.captions = list(json.load(open(caption_path, "r")).values())
         self.visualization = visualization
         self.objective = objective
-        self.bert_model = bert_model
 
     def __call__(self, data):
-
-        image_feature_wp, image_target_wp, image_location_wp, num_boxes, image_h, image_w, image_id, caption, pv, category= (
+        item_id, caption, pv, category, image_h, image_w, num_boxes, image_location_wp, image_feature_wp, \
+        image_target_wp = (
             data
         )
 
-        image_feature = np.zeros((self.region_len, 2048), dtype=np.float32)
-        image_target = np.zeros((self.region_len, 1601), dtype=np.float32)
-        image_location = np.zeros((self.region_len, 5), dtype=np.float32)
-
+        # Step 1: image processing
+        image_feature = np.zeros((self.max_region_len, self.v_feature_size), dtype=np.float32)
+        image_target = np.zeros((self.max_region_len, self.v_target_size), dtype=np.float32)
+        image_location = np.zeros((self.max_region_len, self.v_loc_size), dtype=np.float32)
         # calculate the IOU here.
         overlaps = iou(image_location_wp, image_location_wp)
-
         num_boxes = int(num_boxes)
         image_feature[:num_boxes] = image_feature_wp
         image_target[:num_boxes] = image_target_wp
         image_location[:num_boxes, :4] = image_location_wp
-
         image_location[:, 4] = (
                 (image_location[:, 3] - image_location[:, 1])
                 * (image_location[:, 2] - image_location[:, 0])
                 / (float(image_w) * float(image_h))
         )
-
         image_location[:, 0] = image_location[:, 0] / float(image_w)
         image_location[:, 1] = image_location[:, 1] / float(image_h)
         image_location[:, 2] = image_location[:, 2] / float(image_w)
         image_location[:, 3] = image_location[:, 3] / float(image_h)
-
         if self.visual_target == 0:
             image_feature = copy.deepcopy(image_feature)
             image_target = copy.deepcopy(image_target)
@@ -523,164 +478,84 @@ class BertPreprocessBatch(object):
             image_feature = copy.deepcopy(image_feature)
             image_target = copy.deepcopy(image_feature)
 
-        label, label_pv_t, label_pv_v=0,0,0
+        # Step 2: text processing
+        label, label_pv_t, label_pv_v = 0, 0, 0
+        # if len(pv.strip()) > 0 and (not pv.strip().endswith(';')):
+        #     pv += ';'
+        # import jieba
+        # caption = " ".join(jieba.cut(caption))
+        # pv = " ".join(jieba.cut(pv))
         tokens_caption = self.tokenizer.encode(caption)
-        if len(pv.strip())>0 and (not pv.strip().endswith(';')):
-            pv=pv+';'
         tokens_pv = self.tokenizer.encode(pv)
-        #print(pv)
-        #print(tokens_pv)
+        logger.debug(f"title:{caption}, tokens caption: {tokens_caption},"
+                     f"pv: {pv}, tokens pv: {tokens_pv}")
+
+        # Step 3: transform example to features
         cur_example = InputExample(
             image_feat=image_feature,
             image_target=image_target,
             caption=tokens_caption,
             is_next=label,
-
             pv=tokens_pv,  # add
             is_next_pv_v=label_pv_v,
             is_next_pv_t=label_pv_t,
-
             image_loc=image_location,
             num_boxes=num_boxes,
             overlaps=overlaps,
         )
-
-        # transform sample to features
-        cur_features = self.convert_example_to_features(
-            cur_example, self.seq_len, self.tokenizer, self.region_len, pv, self.seq_len_pv
-        )
-
-        cur_tensors = (
+        cur_features = self.convert_example_to_features(cur_example)
+        # print(f"current features: {cur_features}")
+        return (
+            item_id,
+            # title tensors
             cur_features.input_ids,
             cur_features.input_mask,
             cur_features.segment_ids,
             cur_features.lm_label_ids,
             cur_features.is_next,
-
+            # pv tensors
             cur_features.input_ids_pv,
             cur_features.input_mask_pv,
             cur_features.segment_ids_pv,
             cur_features.lm_label_ids_pv,
             cur_features.is_next_pv_v,
             cur_features.is_next_pv_t,
-
+            cur_features.index_p,
+            cur_features.index_v,
+            # image tensors
             cur_features.image_feat,
             cur_features.image_loc,
             cur_features.image_target,
             cur_features.image_label,
             cur_features.image_mask,
             cur_features.masked_label,
-            cur_features.index_p,
-            cur_features.index_v,
-            image_id,
         )
-        return cur_tensors
 
-    def random_cap(self, caption):
-        """
-        Get one sample from corpus consisting of two sentences. With prob. 50% these are two subsequent sentences
-        from one doc. With 50% the second sentence will be a random one from another doc.
-        :param index: int, index of sample.
-        :return: (str, str, int), sentence 1, sentence 2, isNextSentence Label
-        """
-
-        if self.visualization:
-            return caption, 0
-
-        if self.objective != 2 and random.random() > 0.5:
-            caption = self.get_random_caption()
-            label = 1
-        else:
-            label = 0
-
-        return caption, label
-    def random_cap_pv(self, caption,pv):
-        """
-        Get one sample from corpus consisting of two sentences. With prob. 50% these are two subsequent sentences
-        from one doc. With 50% the second sentence will be a random one from another doc.
-        :param index: int, index of sample.
-        :return: (str, str, int), sentence 1, sentence 2, isNextSentence Label
-        """
-        if self.visualization:
-            return caption, pv, 0,0,0
-
-        if self.objective != 2 :
-            prob=random.random()
-            if prob < 0.1:
-                caption = self.get_random_caption()#
-                return caption, pv, 1, 1, 0
-            elif prob < 0.2:
-                pv = self.get_random_pv()
-                return caption, pv, 0, 1, 1
-            elif prob < 0.3:
-                pv = self.get_random_pv()
-                caption = self.get_random_caption()
-                return caption, pv, 1, 1, 1
-            else:
-                return caption, pv, 0, 0, 0
-        else:
-            return caption, pv, 0, 0, 0
-        
-
-
-    def get_random_caption(self):
-        """
-        Get random caption from another document for nextSentence task.
-        :return: str, content of one line
-        """
-        # add the hard negative mining objective here.
-        rand_doc_idx = random.randint(0, self.captions_len - 1)
-        caption = self.captions[rand_doc_idx]
-
-        return caption
-    def get_random_pv(self):
-        """
-        Get random caption from another document for nextSentence task.
-        :return: str, content of one line
-        """
-        # add the hard negative mining objective here.
-        rand_doc_idx = random.randint(0, self.pvs_len - 1)
-        caption = self.pvs[rand_doc_idx]
-
-        return caption
-
-    def convert_example_to_features(
-            self, example, max_seq_length, tokenizer, max_region_length, pv=None,  max_seq_length_pv=None
-    ):
-        """
-        """
+    def convert_example_to_features(self, example):
         image_feat = example.image_feat
         tokens = example.caption
-
-        tokens_pv = example.pv#add
-
+        tokens_pv = example.pv
         image_loc = example.image_loc
         image_target = example.image_target
         num_boxes = int(example.num_boxes)
-        is_next = example.is_next
-
-        is_next_pv_v=example.is_next_pv_v#add
-        is_next_pv_t = example.is_next_pv_t
-
+        # is_next = example.is_next
+        # is_next_pv_v = example.is_next_pv_v
+        # is_next_pv_t = example.is_next_pv_t
         overlaps = example.overlaps
 
-        self._truncate_seq_pair(tokens, max_seq_length - 2)
-        self._truncate_seq_pair(tokens_pv, max_seq_length_pv - 2)
+        self._truncate_seq_pair(tokens, self.max_seq_len - 2)
+        self._truncate_seq_pair(tokens_pv, self.max_seq_len_pv - 2)
 
-        tokens, tokens_label = self.random_word(tokens, tokenizer, is_next)
-        tokens_pv, tokens_label_pv = self.random_word_pv(tokens_pv, tokenizer, is_next_pv_v)
-        
-
-        image_feat, image_loc, image_label, masked_label = self.random_region(
-            image_feat, image_loc, num_boxes, is_next, overlaps
-        )
+        tokens, tokens_label = self.mask_word(tokens)
+        tokens_pv, tokens_label_pv = self.mask_word_pv(tokens_pv)
+        image_feat, image_loc, image_label, masked_label = self.mask_region(image_feat, image_loc, num_boxes, overlaps)
 
         # concatenate lm labels and account for CLS, SEP, SEP
         lm_label_ids = [-1] + tokens_label + [-1]
         lm_label_ids_pv = [-1] + tokens_label_pv + [-1]
         # print(tokens)
-        tokens = tokenizer.add_special_tokens_single_sentence(tokens)
-        tokens_pv = tokenizer.add_special_tokens_single_sentence(tokens_pv) # [cls_token_id] + token_ids + [sep_token_id].
+        tokens = self.tokenizer.add_special_tokens_single_sentence(tokens)
+        tokens_pv = self.tokenizer.add_special_tokens_single_sentence(tokens_pv) # [cls_token_id] + token_ids + [sep_token_id].
         
         index_p, index_v = self.index_pv(tokens_pv) #
 
@@ -696,19 +571,18 @@ class BertPreprocessBatch(object):
         input_mask = [1] * (len(input_ids))
         input_mask_pv = [1] * (len(input_ids_pv))
         image_mask = [1] * (num_boxes)
-        # Zero-pad up to the visual sequence length.
-        while len(image_mask) < max_region_length:
+        # padding
+        while len(image_mask) < self.max_region_len:
             image_mask.append(0)
             image_label.append(-1)
 
-        # Zero-pad up to the sequence length.
-        while len(input_ids) < max_seq_length:
+        while len(input_ids) < self.max_seq_len:
             input_ids.append(0)
             input_mask.append(0)
             segment_ids.append(0)
             lm_label_ids.append(-1)
 
-        while len(input_ids_pv) < max_seq_length_pv:
+        while len(input_ids_pv) < self.max_seq_len_pv:
             input_ids_pv.append(0)
             input_mask_pv.append(0)
             segment_ids_pv.append(0)
@@ -716,49 +590,45 @@ class BertPreprocessBatch(object):
         
         assert len(index_p) == len(index_v)#一样长才能对应
         
-        while len(index_p) < 10:#最多10个
-            index_p.append([0,0])
-        while len(index_v) < 10:#最多10个
-            index_v.append([0,0])
+        while len(index_p) < self.max_num_pv:
+            index_p.append([0, 0])
+        while len(index_v) < self.max_num_pv:
+            index_v.append([0, 0])
             
-        assert len(input_ids) == max_seq_length
-        assert len(input_mask) == max_seq_length
-        assert len(segment_ids) == max_seq_length
-        assert len(lm_label_ids) == max_seq_length
+        assert len(input_ids) == self.max_seq_len
+        assert len(input_mask) == self.max_seq_len
+        assert len(segment_ids) == self.max_seq_len
+        assert len(lm_label_ids) == self.max_seq_len
 
-        assert len(input_ids_pv) == max_seq_length_pv
-        assert len(input_mask_pv) == max_seq_length_pv
-        assert len(segment_ids_pv) == max_seq_length_pv
-        assert len(lm_label_ids_pv) == max_seq_length_pv
+        assert len(input_ids_pv) == self.max_seq_len_pv
+        assert len(input_mask_pv) == self.max_seq_len_pv
+        assert len(segment_ids_pv) == self.max_seq_len_pv
+        assert len(lm_label_ids_pv) == self.max_seq_len_pv
 
-        assert len(image_mask) == max_region_length
-        assert len(image_label) == max_region_length
+        assert len(image_mask) == self.max_region_len
+        assert len(image_label) == self.max_region_len
 
-        features = InputFeatures(
+        return InputFeatures(
             input_ids=np.array(input_ids),
             input_mask=np.array(input_mask),
             segment_ids=np.array(segment_ids),
             lm_label_ids=np.array(lm_label_ids),
             is_next=np.array(example.is_next),
-
             input_ids_pv=np.array(input_ids_pv),
             input_mask_pv=np.array(input_mask_pv),
             segment_ids_pv=np.array(segment_ids_pv),
             lm_label_ids_pv=np.array(lm_label_ids_pv),
             is_next_pv_v=np.array(example.is_next_pv_v),
             is_next_pv_t=np.array(example.is_next_pv_t),
-
-
             image_feat=image_feat,
             image_target=image_target,
             image_loc=image_loc,
             image_label=np.array(image_label),
             image_mask=np.array(image_mask),
             masked_label=masked_label,
-            index_p = np.array(index_p),
-            index_v = np.array(index_v)
+            index_p=np.array(index_p),
+            index_v=np.array(index_v)
         )
-        return features
 
     def _truncate_seq_pair(self, tokens_b, max_length):
         """Truncates a sequence pair in place to the maximum length."""
@@ -774,32 +644,24 @@ class BertPreprocessBatch(object):
 
             tokens_b.pop()
 
-    def random_word(self, tokens, tokenizer, is_next):
+    def mask_word(self, tokens):
         output_label = []
 
         for i, token in enumerate(tokens):
             prob = random.random()
             # mask token with 15% probability
-
-            # if is_next == 1 and self.objective != 0:
-            #     prob = 1 # not sample mask
             if prob < 0.15 and (not self.visualization):
                 prob /= 0.15
-
-                # 80% randomly change token to mask token
+                # 80% change to mask token
                 if prob < 0.8:
-                    tokens[i] = tokenizer.convert_tokens_to_ids(tokenizer.mask_token)
-
-                # 10% randomly change token to random token
+                    tokens[i] = self.tokenizer.convert_tokens_to_ids(self.tokenizer.mask_token)
+                # 10% change to random token
                 elif prob < 0.9:
-                    tokens[i] = np.random.randint(len(tokenizer))
-                    # torch.randint(len(tokenizer), labels.shape, dtype=torch.long)
-
-                # -> rest 10% randomly keep current token
-                # append current token to output (we will predict these later)
+                    tokens[i] = np.random.randint(len(self.tokenizer))
+                # 10% no change
                 output_label.append(token)
+            # no masking token (will be ignored by loss function later)
             else:
-                # no masking token (will be ignored by loss function later)
                 output_label.append(-1)
 
         return tokens, output_label
@@ -807,114 +669,106 @@ class BertPreprocessBatch(object):
     def index_pv(self, tokens):
         # [cls_token_id] + 真token_ids + [sep_token_id].
         #[cls, 6132, 7305, 6199, 131, 2861, 7216, 132, xxx, xxx, 131, xxx, xxx, xxx, 132...
-        index_131=[]#[4,10]
-        index_132=[]#[7,14]
-        for i,tok_id in enumerate(tokens):# : ;
-            if tok_id==131:
-                index_131.append(i)#:
-            if tok_id==132:
-                index_132.append(i)#;
-        if len(index_132)==len(index_131):#
+        index_131 = [] #[4,10]
+        index_132 = [] #[7,14]
+        for i, tok_id in enumerate(tokens):
+            if tok_id == 131:
+                index_131.append(i)
+            if tok_id == 132:
+                index_132.append(i)
+        if len(index_132) == len(index_131):
             pass
-        elif len(index_132)==len(index_131)-1:#
-            index_131=index_131[:-1]#
-        else: #
-            index_131=[]
-            index_132=[]
+        elif len(index_132) == len(index_131) - 1:
+            index_131 = index_131[:-1]
+        else:
+            index_131 = []
+            index_132 = []
         
-        index_p=[]
-        index_v=[]
-        pv_begin=1
+        index_p = []
+        index_v = []
+        pv_begin = 1
         for idx131, idx132 in zip(index_131, index_132):
-            index_p.append([pv_begin, idx131])#[[1,4],[8,10]]
-            index_v.append([idx131+1, idx132])#[[5,7],[11,14]]
-            pv_begin = idx132+1#8
+            index_p.append([pv_begin, idx131]) #[[1,4],[8,10]]
+            index_v.append([idx131+1, idx132]) #[[5,7],[11,14]]
+            pv_begin = idx132 + 1
+            if len(index_p) > self.max_num_pv or len(index_v) > self.max_num_pv:
+                break
         
         return index_p, index_v 
-            
+
+    def mask_word_pv(self, tokens):
+        # token_id=131, token=:
+        # token_id=132, token=;
         
-            
-    def random_word_pv(self, tokens, tokenizer, is_next):
-        #[6132, 7305, 6199, 131, 2861, 7216, 132, xxx, xxx, 131, xxx, xxx, xxx, 132...
-        #131与132之间是v
-        
-        index_131=[]
-        index_132=[]
-        for i,tok_id in enumerate(tokens):#
-            if tok_id==131:
+        index_131 = []
+        index_132 = []
+        for i, tok_id in enumerate(tokens):#
+            if tok_id == 131:
                 index_131.append(i)
-            if tok_id==132:
+            if tok_id == 132:
                 index_132.append(i)
         
-        #print('index_131',index_131)
-        #print('index_132',index_132)
-        #print('len(tokens)',len(tokens))
-        
-        if len(index_132)==len(index_131)-1: 
+        if len(index_132) == len(index_131)-1:
             index_132.append(len(tokens)) 
-        if len(index_132)>1: 
+        if len(index_132) > 1:
             index_132=index_132[1:]#
             index_131=index_131[1:]#
             
         output_label = [-1]*len(tokens)
         #print(tokens)
-        for beg_i,end_i in zip(index_131,index_132):#v index
-            for i in range(beg_i+1,end_i):# v
-                output_label[i]=tokens[i]
-                tokens[i] = tokenizer.convert_tokens_to_ids(tokenizer.mask_token)
+        for beg_i, end_i in zip(index_131, index_132):#v index
+            for i in range(beg_i+1, end_i):# v
+                output_label[i] = tokens[i]
+                tokens[i] = self.tokenizer.convert_tokens_to_ids(self.tokenizer.mask_token)
         
         return tokens, output_label
-            
-        
-        have_131=-1
-        have_132=-1
-        try:
-            have_131=tokens.index(131)#3
-            have_132=tokens.index(132)#6#need mask 4(have_131+1),5  for i in range(have_131+1,have_132):mask
-        except: 
-            have_132=len(tokens)
-            
-            
-        output_label = [-1]*len(tokens)
-        if have_131!=-1 and have_132!=-1: 
-            for i in range(have_131+1,have_132):
-                output_label[i]=tokens[i] 
-                tokens[i] = tokenizer.convert_tokens_to_ids(tokenizer.mask_token)
-            return tokens, output_label
-        
-    
-        output_label = []
-        for i, token in enumerate(tokens):
-            #print(tokens)
-            prob = random.random()
-            # mask token with 15% probability
 
-            # if is_next == 1 and self.objective != 0:
-            #     prob = 1 # not sample mask
-            if prob < 0.15 and (not self.visualization):
-                prob /= 0.15
+        # have_131 = -1
+        # have_132 = -1
+        # try:
+        #     have_131 = tokens.index(131)#3
+        #     have_132 = tokens.index(132)#6#need mask 4(have_131+1),5  for i in range(have_131+1,have_132):mask
+        # except:
+        #     have_132 = len(tokens)
+        #
+        #
+        # output_label = [-1]*len(tokens)
+        # if have_131 != -1 and have_132 != -1:
+        #     for i in range(have_131+1, have_132):
+        #         output_label[i] = tokens[i]
+        #         tokens[i] = self.tokenizer.convert_tokens_to_ids(self.tokenizer.mask_token)
+        #     return tokens, output_label
+        #
+        # output_label = []
+        # for i, token in enumerate(tokens):
+        #     #print(tokens)
+        #     prob = random.random()
+        #     # mask token with 15% probability
+        #
+        #     # if is_next == 1 and self.objective != 0:
+        #     #     prob = 1 # not sample mask
+        #     if prob < 0.15 and (not self.visualization):
+        #         prob /= 0.15
+        #
+        #         # 80% randomly change token to mask token
+        #         if prob < 0.8:
+        #             tokens[i] = self.tokenizer.convert_tokens_to_ids(self.tokenizer.mask_token)
+        #
+        #         # 10% randomly change token to random token
+        #         elif prob < 0.9:
+        #             tokens[i] = np.random.randint(len(self.tokenizer))
+        #             # torch.randint(len(tokenizer), labels.shape, dtype=torch.long)
+        #
+        #         # -> rest 10% randomly keep current token
+        #         # append current token to output (we will predict these later)
+        #         output_label.append(token)
+        #     else:
+        #         # no masking token (will be ignored by loss function later)
+        #         output_label.append(-1)
+        #
+        # return tokens, output_label
 
-                # 80% randomly change token to mask token
-                if prob < 0.8:
-                    tokens[i] = tokenizer.convert_tokens_to_ids(tokenizer.mask_token)
-
-                # 10% randomly change token to random token
-                elif prob < 0.9:
-                    tokens[i] = np.random.randint(len(tokenizer))
-                    # torch.randint(len(tokenizer), labels.shape, dtype=torch.long)
-
-                # -> rest 10% randomly keep current token
-                # append current token to output (we will predict these later)
-                output_label.append(token)
-            else:
-                # no masking token (will be ignored by loss function later)
-                output_label.append(-1)
-
-        return tokens, output_label
-
-    def random_region(self, image_feat, image_loc, num_boxes, is_next, overlaps):
-        """
-        """
+    def mask_region(self, image_feat, image_loc, num_boxes, overlaps):
         output_label = []
         masked_label = np.zeros((image_feat.shape[0]))  # 全是补齐了的36个
         max_length = len(masked_label)  # 36
