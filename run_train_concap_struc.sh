@@ -30,7 +30,6 @@ python $MAIN \
   --config_file "k3m_roberta_base.json" \
   --pretrained_model_weights "roberta_base_weight_names.json" \
   --do_train \
-  --do_eval \
   --if_pre_sampling 1 \
   --with_coattention \
   --objective 0 \
