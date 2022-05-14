@@ -548,10 +548,10 @@ def main():
                     value_masked_loss_pv = int(masked_loss_pv.cpu().detach().numpy()[0] * 1000) / 1000
                     value_loss_tri = int(loss_tri.cpu().detach().numpy()[0] * 1000) / 1000
                 else:
-                    value_loss = int(loss.cpu().detach().numpy()* 1000) / 1000
+                    value_loss = int(loss.cpu().detach().numpy() * 1000) / 1000
                     value_masked_loss_t = int(masked_loss_t.cpu().detach().numpy() * 1000) / 1000
-                    value_masked_loss_v = int(masked_loss_v.cpu().detach().numpy()* 1000) / 1000
-                    value_masked_loss_pv = int(masked_loss_pv.cpu().detach().numpy()* 1000) / 1000
+                    value_masked_loss_v = int(masked_loss_v.cpu().detach().numpy() * 1000) / 1000
+                    value_masked_loss_pv = int(masked_loss_pv.cpu().detach().numpy() * 1000) / 1000
                     value_loss_tri = int(loss_tri.cpu().detach().numpy() * 1000) / 1000
 
                 if (step + 1) % args.log_steps == 0:

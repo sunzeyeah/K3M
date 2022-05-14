@@ -338,7 +338,7 @@ class Conceptual_Caption(td.RNGDataFlow):
                 title = " ".join(jieba.cut(title))
                 image_id = f"{item_id}_{self.file_type}"
                 image_path = os.path.join(self.image_dir, item_image_name)
-                # default image featurev values for item without image
+                # default image feature values for item without image
                 image_h, image_w, num_boxes = 800, 800, 1
                 boxes = np.array([[0.1, 0.1, image_w-0.1, image_h-0.1]], dtype=np.float32)
                 features = np.zeros((num_boxes, 2048), dtype=np.float32)
