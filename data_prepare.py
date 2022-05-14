@@ -341,9 +341,9 @@ class Conceptual_Caption(td.RNGDataFlow):
                 title = " ".join(jieba.cut(title))
                 image_id = f"{item_id}_{self.file_type}"
                 image_path = os.path.join(self.image_dir, item_image_name)
+                image_h, image_w, num_boxes, boxes, features, cls_prob = 0, 0, 0, 0, 0, 0
                 image = cv2.imread(image_path)
-                try:
-                    image_h, image_w, num_boxes, boxes, features, cls_prob = 0, 0, 0, 0, 0, 0
+                if image is not None:
                     try:
                         image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
                         image_rgb = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2BGR)
@@ -360,11 +360,9 @@ class Conceptual_Caption(td.RNGDataFlow):
                         logger.warning(f"[CV2 ERROR] image_id: {image_id}")
                     except Exception as e:
                         logger.warning(f"[Image ERROR] image_id: {image_id}")
-                    # 图像与其余模态混合存储
-                    self.lines.append([item_id, title, item_pvs, cate_name, image_h, image_w, num_boxes, boxes, features, cls_prob])
-                except Exception as e:
-                    logger.error(f"[ERROR] image_id: {image_id}", e)
-                    # traceback.print_exc()
+                # 图像与其余模态混合存储
+                self.lines.append([item_id, title, item_pvs, cate_name, image_h, image_w, num_boxes, boxes, features, cls_prob])
+
                 ct += 1
                 if ct % 5000 == 0:
                     logger.info(f"{file_type}: {ct} images processed")
