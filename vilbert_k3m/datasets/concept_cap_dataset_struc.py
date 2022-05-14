@@ -452,21 +452,22 @@ class BertPreprocessBatch(object):
         image_feature = np.zeros((self.max_region_len, self.v_feature_size), dtype=np.float32)
         image_target = np.zeros((self.max_region_len, self.v_target_size), dtype=np.float32)
         image_location = np.zeros((self.max_region_len, self.v_loc_size), dtype=np.float32)
+        num_boxes = int(num_boxes)
         # calculate the IOU here.
         overlaps = iou(image_location_wp, image_location_wp)
-        num_boxes = int(num_boxes)
-        image_feature[:num_boxes] = image_feature_wp
-        image_target[:num_boxes] = image_target_wp
-        image_location[:num_boxes, :4] = image_location_wp
-        image_location[:, 4] = (
-                (image_location[:, 3] - image_location[:, 1])
-                * (image_location[:, 2] - image_location[:, 0])
-                / (float(image_w) * float(image_h))
-        )
-        image_location[:, 0] = image_location[:, 0] / float(image_w)
-        image_location[:, 1] = image_location[:, 1] / float(image_h)
-        image_location[:, 2] = image_location[:, 2] / float(image_w)
-        image_location[:, 3] = image_location[:, 3] / float(image_h)
+        if num_boxes > 0:
+            image_feature[:num_boxes] = image_feature_wp
+            image_target[:num_boxes] = image_target_wp
+            image_location[:num_boxes, :4] = image_location_wp
+            image_location[:, 4] = (
+                    (image_location[:, 3] - image_location[:, 1])
+                    * (image_location[:, 2] - image_location[:, 0])
+                    / (float(image_w) * float(image_h))
+            )
+            image_location[:, 0] = image_location[:, 0] / float(image_w)
+            image_location[:, 1] = image_location[:, 1] / float(image_h)
+            image_location[:, 2] = image_location[:, 2] / float(image_w)
+            image_location[:, 3] = image_location[:, 3] / float(image_h)
         if self.visual_target == 0:
             image_feature = copy.deepcopy(image_feature)
             image_target = copy.deepcopy(image_target)
@@ -488,13 +489,13 @@ class BertPreprocessBatch(object):
 
         # Step 3: transform example to features
         cur_example = InputExample(
-            image_feat=image_feature,
-            image_target=image_target,
             caption=tokens_caption,
             is_next=label,
-            pv=tokens_pv,  # add
+            pv=tokens_pv,
             is_next_pv_v=label_pv_v,
             is_next_pv_t=label_pv_t,
+            image_feat=image_feature,
+            image_target=image_target,
             image_loc=image_location,
             num_boxes=num_boxes,
             overlaps=overlaps,
