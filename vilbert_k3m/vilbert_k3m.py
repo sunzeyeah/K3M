@@ -1965,11 +1965,9 @@ class BertModel_tri(BertPreTrainedModel):
             token_type_ids=None,
             attention_mask=None,
             image_attention_mask=None,
-
-            input_txt_pv=None,  # input_ids_pv
+            input_txt_pv=None,
             token_type_ids_pv=None,
             attention_mask_pv=None,
-
             co_attention_mask=None,
             task_ids=None,
             output_all_encoded_layers=False,
@@ -2451,11 +2449,9 @@ class BertForMultiModalPreTraining_tri_stru(BertPreTrainedModel):
             token_type_ids,
             attention_mask,
             image_attention_mask,
-
             input_ids_pv,
             token_type_ids_pv,
             attention_mask_pv,
-
             output_all_encoded_layers=False,
             output_all_attention_masks=output_all_attention_masks,
         )

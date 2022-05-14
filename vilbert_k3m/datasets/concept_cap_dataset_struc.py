@@ -259,6 +259,10 @@ class ConceptCapLoaderTrain_struc(object):
                 batch
             )
 
+            # when image features are missing
+            if masked_label is None:
+                continue
+
             batch_size = input_ids.shape[0]
             sum_count = np.sum(masked_label == 0, axis=1, keepdims=True)
             sum_count[sum_count == 0] = 1
@@ -453,9 +457,11 @@ class BertPreprocessBatch(object):
         image_target = np.zeros((self.max_region_len, self.v_target_size), dtype=np.float32)
         image_location = np.zeros((self.max_region_len, self.v_loc_size), dtype=np.float32)
         num_boxes = int(num_boxes)
-        # calculate the IOU here.
-        overlaps = iou(image_location_wp, image_location_wp)
+        overlaps = None
+        # when image features are available
         if num_boxes > 0:
+            # calculate the IOU here.
+            overlaps = iou(image_location_wp, image_location_wp)
             image_feature[:num_boxes] = image_feature_wp
             image_target[:num_boxes] = image_target_wp
             image_location[:num_boxes, :4] = image_location_wp
@@ -477,11 +483,6 @@ class BertPreprocessBatch(object):
 
         # Step 2: text processing
         label, label_pv_t, label_pv_v = 0, 0, 0
-        # if len(pv.strip()) > 0 and (not pv.strip().endswith(';')):
-        #     pv += ';'
-        # import jieba
-        # caption = " ".join(jieba.cut(caption))
-        # pv = " ".join(jieba.cut(pv))
         tokens_caption = self.tokenizer.encode(caption)
         tokens_pv = self.tokenizer.encode(pv)
         logger.debug(f"title:{caption}, tokens caption: {tokens_caption},"
@@ -489,11 +490,14 @@ class BertPreprocessBatch(object):
 
         # Step 3: transform example to features
         cur_example = InputExample(
+            # title
             caption=tokens_caption,
-            is_next=label,
+            # item pvs
             pv=tokens_pv,
+            is_next=label,
             is_next_pv_v=label_pv_v,
             is_next_pv_t=label_pv_t,
+            # image
             image_feat=image_feature,
             image_target=image_target,
             image_loc=image_location,
@@ -540,39 +544,24 @@ class BertPreprocessBatch(object):
         # is_next_pv_t = example.is_next_pv_t
         overlaps = example.overlaps
 
+        ## 1. Text Processing
         self._truncate_seq_pair(tokens, self.max_seq_len - 2)
         self._truncate_seq_pair(tokens_pv, self.max_seq_len_pv - 2)
-
         tokens, tokens_label = self.mask_word(tokens)
         tokens_pv, tokens_label_pv = self.mask_word_pv(tokens_pv)
-        image_feat, image_loc, image_label, masked_label = self.mask_region(image_feat, image_loc, num_boxes, overlaps)
-
         # concatenate lm labels and account for CLS, SEP, SEP
         lm_label_ids = [-1] + tokens_label + [-1]
         lm_label_ids_pv = [-1] + tokens_label_pv + [-1]
-        # print(tokens)
         tokens = self.tokenizer.add_special_tokens_single_sentence(tokens)
         tokens_pv = self.tokenizer.add_special_tokens_single_sentence(tokens_pv) # [cls_token_id] + token_ids + [sep_token_id].
-        
         index_p, index_v = self.index_pv(tokens_pv) #
-
         segment_ids = [0] * len(tokens)
         segment_ids_pv = [0] * len(tokens_pv)
-
         input_ids = tokens  # tokenizer.convert_tokens_to_ids(tokens)
         input_ids_pv = tokens_pv  # tokenizer.convert_tokens_to_ids(tokens)
-
-        # The mask has 1 for real tokens and 0 for padding tokens. Only real
-        # tokens are attended to.
-        # input_ids = input_ids[:1] input_ids[1:]
+        # padding
         input_mask = [1] * (len(input_ids))
         input_mask_pv = [1] * (len(input_ids_pv))
-        image_mask = [1] * (num_boxes)
-        # padding
-        while len(image_mask) < self.max_region_len:
-            image_mask.append(0)
-            image_label.append(-1)
-
         while len(input_ids) < self.max_seq_len:
             input_ids.append(0)
             input_mask.append(0)
@@ -584,14 +573,15 @@ class BertPreprocessBatch(object):
             input_mask_pv.append(0)
             segment_ids_pv.append(0)
             lm_label_ids_pv.append(-1)
-        
-        assert len(index_p) == len(index_v)#一样长才能对应
-        
+
+        assert len(index_p) == len(index_v)
+
         while len(index_p) < self.max_num_pv:
             index_p.append([0, 0])
         while len(index_v) < self.max_num_pv:
             index_v.append([0, 0])
-            
+
+        # sanity check
         assert len(input_ids) == self.max_seq_len
         assert len(input_mask) == self.max_seq_len
         assert len(segment_ids) == self.max_seq_len
@@ -602,8 +592,20 @@ class BertPreprocessBatch(object):
         assert len(segment_ids_pv) == self.max_seq_len_pv
         assert len(lm_label_ids_pv) == self.max_seq_len_pv
 
-        assert len(image_mask) == self.max_region_len
-        assert len(image_label) == self.max_region_len
+        ## 2. Image Processing
+        masked_label = None
+        image_label = []
+        image_mask = []
+        if num_boxes > 0:
+            image_feat, image_loc, image_label, masked_label = self.mask_region(image_feat, image_loc, num_boxes, overlaps)
+            # padding
+            image_mask = [1] * (num_boxes)
+            while len(image_mask) < self.max_region_len:
+                image_mask.append(0)
+                image_label.append(-1)
+            # sanity check
+            assert len(image_mask) == self.max_region_len
+            assert len(image_label) == self.max_region_len
 
         return InputFeatures(
             input_ids=np.array(input_ids),
