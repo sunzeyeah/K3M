@@ -343,23 +343,25 @@ class Conceptual_Caption(td.RNGDataFlow):
                 image_path = os.path.join(self.image_dir, item_image_name)
                 image = cv2.imread(image_path)
                 try:
-                    image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-                    image_rgb = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2BGR)
-                    # 抽取图像特征
-                    detection_feature = get_detections_from_image(predictor, image_rgb)
-                    if detection_feature is None:
-                        continue
-                    image_h = detection_feature['image_h']
-                    image_w = detection_feature['image_w']
-                    num_boxes = detection_feature['num_boxes']
-                    boxes = detection_feature['boxes']
-                    features = detection_feature['features']
-                    cls_prob = detection_feature['cls_prob']
+                    image_h, image_w, num_boxes, boxes, features, cls_prob = 0, 0, 0, 0, 0, 0
+                    try:
+                        image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+                        image_rgb = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2BGR)
+                        # 抽取图像特征
+                        detection_feature = get_detections_from_image(predictor, image_rgb)
+                        if detection_feature is not None:
+                            image_h = detection_feature['image_h']
+                            image_w = detection_feature['image_w']
+                            num_boxes = detection_feature['num_boxes']
+                            boxes = detection_feature['boxes']
+                            features = detection_feature['features']
+                            cls_prob = detection_feature['cls_prob']
+                    except cv2.error as e:
+                        logger.warning(f"[CV2 ERROR] image_id: {image_id}")
+                    except Exception as e:
+                        logger.warning(f"[Image ERROR] image_id: {image_id}")
                     # 图像与其余模态混合存储
                     self.lines.append([item_id, title, item_pvs, cate_name, image_h, image_w, num_boxes, boxes, features, cls_prob])
-                except cv2.error as e:
-                    logger.error(f"[CV2 ERROR] image_id: {image_id}", e)
-                    # traceback.print_exc()
                 except Exception as e:
                     logger.error(f"[ERROR] image_id: {image_id}", e)
                     # traceback.print_exc()
