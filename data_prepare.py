@@ -36,9 +36,6 @@ NUM_OBJECTS = 36
 
 FIELDNAMES = ['image_id', 'image_w', 'image_h', 'num_boxes', 'boxes', 'features', 'cls_prob']
 
-MIN_BOXES = 36
-MAX_BOXES = 36
-
 FILE_SYSTEM_SEP = "\\" if sys.platform.startswith("win") else "/"
 
 
@@ -243,7 +240,7 @@ def get_detections_from_image(predictor, raw_image):
         selected_probs = probs[ids]
         # logger.debug(f"selected_probs size: {selected_probs.size()}")
 
-        if torch.sum(torch.isnan(roi_features))>0:
+        if torch.sum(torch.isnan(roi_features)) > 0:
             return
 
         return {
@@ -341,7 +338,11 @@ class Conceptual_Caption(td.RNGDataFlow):
                 title = " ".join(jieba.cut(title))
                 image_id = f"{item_id}_{self.file_type}"
                 image_path = os.path.join(self.image_dir, item_image_name)
-                image_h, image_w, num_boxes, boxes, features, cls_prob = 0, 0, 0, 0, 0, 0
+                # default image featurev values for item without image
+                image_h, image_w, num_boxes = 800, 800, 1
+                boxes = np.array([[0.1, 0.1, image_w-0.1, image_h-0.1]], dtype=np.float32)
+                features = np.zeros((num_boxes, 2048), dtype=np.float32)
+                cls_prob = np.zeros((num_boxes, 1601), dtype=np.float32)
                 image = cv2.imread(image_path)
                 if image is not None:
                     try:
