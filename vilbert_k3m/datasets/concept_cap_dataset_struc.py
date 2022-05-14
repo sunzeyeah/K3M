@@ -259,10 +259,6 @@ class ConceptCapLoaderTrain_struc(object):
                 batch
             )
 
-            # when image features are missing
-            if masked_label is None:
-                continue
-
             batch_size = input_ids.shape[0]
             sum_count = np.sum(masked_label == 0, axis=1, keepdims=True)
             sum_count[sum_count == 0] = 1
@@ -457,23 +453,20 @@ class BertPreprocessBatch(object):
         image_target = np.zeros((self.max_region_len, self.v_target_size), dtype=np.float32)
         image_location = np.zeros((self.max_region_len, self.v_loc_size), dtype=np.float32)
         num_boxes = int(num_boxes)
-        overlaps = None
-        # when image features are available
-        if num_boxes > 0:
-            # calculate the IOU here.
-            overlaps = iou(image_location_wp, image_location_wp)
-            image_feature[:num_boxes] = image_feature_wp
-            image_target[:num_boxes] = image_target_wp
-            image_location[:num_boxes, :4] = image_location_wp
-            image_location[:, 4] = (
-                    (image_location[:, 3] - image_location[:, 1])
-                    * (image_location[:, 2] - image_location[:, 0])
-                    / (float(image_w) * float(image_h))
-            )
-            image_location[:, 0] = image_location[:, 0] / float(image_w)
-            image_location[:, 1] = image_location[:, 1] / float(image_h)
-            image_location[:, 2] = image_location[:, 2] / float(image_w)
-            image_location[:, 3] = image_location[:, 3] / float(image_h)
+        # calculate the IOU here.
+        overlaps = iou(image_location_wp, image_location_wp)
+        image_feature[:num_boxes] = image_feature_wp
+        image_target[:num_boxes] = image_target_wp
+        image_location[:num_boxes, :4] = image_location_wp
+        image_location[:, 4] = (
+                (image_location[:, 3] - image_location[:, 1])
+                * (image_location[:, 2] - image_location[:, 0])
+                / (float(image_w) * float(image_h))
+        )
+        image_location[:, 0] = image_location[:, 0] / float(image_w)
+        image_location[:, 1] = image_location[:, 1] / float(image_h)
+        image_location[:, 2] = image_location[:, 2] / float(image_w)
+        image_location[:, 3] = image_location[:, 3] / float(image_h)
         if self.visual_target == 0:
             image_feature = copy.deepcopy(image_feature)
             image_target = copy.deepcopy(image_target)
