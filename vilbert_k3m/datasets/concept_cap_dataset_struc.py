@@ -579,11 +579,13 @@ class BertPreprocessBatch(object):
         assert len(input_mask) == self.max_seq_len
         assert len(segment_ids) == self.max_seq_len
         assert len(lm_label_ids) == self.max_seq_len
-
         assert len(input_ids_pv) == self.max_seq_len_pv
         assert len(input_mask_pv) == self.max_seq_len_pv
         assert len(segment_ids_pv) == self.max_seq_len_pv
         assert len(lm_label_ids_pv) == self.max_seq_len_pv
+        assert len(index_p) == self.max_num_pv
+        assert len(index_v) == self.max_num_pv
+
 
         ## 2. Image Processing
         masked_label = None
@@ -683,7 +685,7 @@ class BertPreprocessBatch(object):
             index_p.append([pv_begin, idx131]) #[[1,4],[8,10]]
             index_v.append([idx131+1, idx132]) #[[5,7],[11,14]]
             pv_begin = idx132 + 1
-            if len(index_p) > self.max_num_pv or len(index_v) > self.max_num_pv:
+            if len(index_p) >= self.max_num_pv or len(index_v) >= self.max_num_pv:
                 break
         
         return index_p, index_v 
