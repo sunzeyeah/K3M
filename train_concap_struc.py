@@ -623,7 +623,7 @@ def main():
                     if not args.no_cuda:
                         index_p = index_p.cuda(device=device, non_blocking=True)
                         index_v = index_v.cuda(device=device, non_blocking=True)
-                        batch = tuple(t.cuda(device=device, non_blocking=True) for t in batch[:-3])
+                        batch = tuple(t.cuda(device=device, non_blocking=True) for t in batch)
 
                     input_ids, input_mask, segment_ids, lm_label_ids, is_next, input_ids_pv, input_mask_pv, segment_ids_pv, \
                     lm_label_ids_pv, is_next_pv_v, is_next_pv_t, image_feat, image_loc, image_target, image_label, image_mask= (batch)

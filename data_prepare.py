@@ -331,9 +331,9 @@ class Conceptual_Caption(td.RNGDataFlow):
                 jd = json.loads(line.strip())
                 item_id = jd['item_id']
                 item_image_name = jd['item_image_name']
-                title = jd['title']
-                item_pvs = jd['item_pvs']
-                cate_name = jd['cate_name']
+                title = jd.get('title', "")
+                item_pvs = jd.get('item_pvs', "")
+                cate_name = jd.get('cate_name', "")
                 item_pvs = item_pvs.replace("#", "")
                 if not item_pvs.endswith(";"):
                     item_pvs += ';'
@@ -364,9 +364,9 @@ class Conceptual_Caption(td.RNGDataFlow):
                     logger.error(f"[ERROR] image_id: {image_id}", e)
                     # traceback.print_exc()
                 ct += 1
-                if ct % 10 == 0:
+                if ct % 5000 == 0:
                     logger.info(f"{file_type}: {ct} images processed")
-                    break
+                    # break
 
         self.num_lines = len(self.lines)
         if shuffle:
@@ -445,7 +445,7 @@ def main():
     # logger.info("[Step 3] Finished extracting image features")
 
     # step 4: 抽取图像特征，和其余模态混合，序列化存储
-    for dtype in ["train", "valid"]:
+    for dtype in ["train+valid"]:
         serialize(args, dtype)
     logger.info("Finished serializing files")
 
