@@ -448,6 +448,12 @@ class BertPreprocessBatch(object):
         )
 
         # Step 1: image processing
+        if num_boxes <= 0:
+            # if no boxes are found, use default value
+            image_h, image_w, num_boxes = 800, 800, 1
+            image_location_wp = np.array([[0.1, 0.1, image_w-0.1, image_h-0.1]], dtype=np.float32)
+            image_feature_wp = np.zeros((num_boxes, self.v_feature_size), dtype=np.float32)
+            image_target_wp = np.zeros((num_boxes, self.v_target_size), dtype=np.float32)
         image_feature = np.zeros((self.max_region_len, self.v_feature_size), dtype=np.float32)
         image_target = np.zeros((self.max_region_len, self.v_target_size), dtype=np.float32)
         image_location = np.zeros((self.max_region_len, self.v_loc_size), dtype=np.float32)
@@ -455,7 +461,8 @@ class BertPreprocessBatch(object):
         # calculate the IOU here.
         overlaps = iou(image_location_wp, image_location_wp)
         image_feature[:num_boxes] = image_feature_wp
-        image_target[:num_boxes] = image_target_wp
+        if self.visual_target == 0:
+            image_target[:num_boxes] = image_target_wp
         image_location[:num_boxes, :4] = image_location_wp
         image_location[:, 4] = (
                 (image_location[:, 3] - image_location[:, 1])
@@ -585,21 +592,17 @@ class BertPreprocessBatch(object):
         assert len(index_p) == self.max_num_pv
         assert len(index_v) == self.max_num_pv
 
-
         ## 2. Image Processing
-        masked_label = None
-        image_label = []
-        image_mask = []
-        if num_boxes > 0:
-            image_feat, image_loc, image_label, masked_label = self.mask_region(image_feat, image_loc, num_boxes, overlaps)
-            # padding
-            image_mask = [1] * (num_boxes)
-            while len(image_mask) < self.max_region_len:
-                image_mask.append(0)
-                image_label.append(-1)
-            # sanity check
-            assert len(image_mask) == self.max_region_len
-            assert len(image_label) == self.max_region_len
+        image_feat, image_loc, image_label, masked_label = self.mask_region(image_feat, image_loc, num_boxes, overlaps)
+        image_mask = [1] * (num_boxes)
+        # padding
+        while len(image_mask) < self.max_region_len:
+            image_mask.append(0)
+        while len(image_label) < self.max_region_len:
+            image_label.append(-1)
+        # sanity check
+        assert len(image_mask) == self.max_region_len
+        assert len(image_label) == self.max_region_len
 
         return InputFeatures(
             input_ids=np.array(input_ids),
@@ -766,7 +769,6 @@ class BertPreprocessBatch(object):
         masked_label = np.zeros((image_feat.shape[0]))  # 全是补齐了的36个
         max_length = len(masked_label)  # 36
 
-        
         if num_boxes < max_length:
             zero_array = np.zeros((num_boxes, max_length - num_boxes))
             overlaps = np.column_stack((overlaps, zero_array))

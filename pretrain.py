@@ -798,7 +798,7 @@ def train_single(args, config, device):
     # 创建data loader
     train_dataset = ConceptCapLoaderTrain_struc(
         args.data_dir,
-        args.file_name.format("train+valid"),
+        args.file_name.format("train"),
         tokenizer,
         max_seq_len=args.max_seq_length,
         max_seq_len_pv=args.max_seq_length_pv,
@@ -853,7 +853,7 @@ def train_single(args, config, device):
         optimizer_grouped_parameters = []
         for key, value in dict(model.named_parameters()).items():
             if value.requires_grad:
-                if key[12:] in bert_weight_name:
+                if "bert." + key in bert_weight_name:
                     lr = args.learning_rate * 0.1
                 else:
                     lr = args.learning_rate
@@ -1316,6 +1316,8 @@ def get_parser():
              "Sequences longer than this will be truncated, and sequences shorter \n"
              "than this will be padded.")
     parser.add_argument("--max_num_pv", default=30, type=int, help="maximum number of (property, value) pairs")
+    parser.add_argument("--num_negative_pv", default=4, type=int, help="number of negative samples to use when calculating LPM loss")
+    parser.add_argument("--margin", default=10.0, type=float, help="margin in calculating LPM loss")
     # CV Model
     parser.add_argument("--max_region_length", default=36, type=int, help="The maximum region length of a image")
     parser.add_argument("--dynamic_attention", action="store_true", help="whether use dynamic attention for image")
@@ -1323,7 +1325,7 @@ def get_parser():
         0: soft label, \
         1: regress the feature, \
         2: NCE loss.")  # 图片部分具体拟合的对象
-    parser.add_argument("--num_negative", default=255, type=int, help="When visutal_target=2, num of negatives to use")
+    parser.add_argument("--num_negative_image", default=255, type=int, help="When visutal_target=2, num of negatives to use")
 
     return parser.parse_args()
 
@@ -1360,7 +1362,9 @@ def main():
     config.with_coattention = args.with_coattention
     config.dynamic_attention = args.dynamic_attention
     config.if_pre_sampling = args.if_pre_sampling
-    config.num_negative = args.num_negative
+    config.num_negative_image = args.num_negative_image
+    config.num_negative_pv = args.num_negative_pv
+    config.margin = args.margin
 
     if n_gpu > 1:
         # 单机多卡

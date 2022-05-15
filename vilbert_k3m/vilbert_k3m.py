@@ -8,7 +8,7 @@ import json
 import logging
 import math
 import os
-import shutil
+import random
 import tarfile
 import tempfile
 import sys
@@ -16,15 +16,15 @@ from io import open
 
 import torch
 from torch import nn
-from torch.nn import CrossEntropyLoss
+from torch.nn import CrossEntropyLoss, MarginRankingLoss
 import torch.nn.functional as F
-from torch.nn.utils.weight_norm import weight_norm
+# from torch.nn.utils.weight_norm import weight_norm
 
 from .utils import PreTrainedModel
-import pdb
-import numpy as np
-from sklearn import metrics
-import time
+# import pdb
+# import numpy as np
+# from sklearn import metrics
+# import time
 
 logging.basicConfig(
     format="%(asctime)s %(levelname)-4s [%(filename)s:%(lineno)s]  %(message)s",
@@ -186,7 +186,9 @@ class BertConfig(object):
             dynamic_attention=False,
             with_coattention=True,
             objective=0,
-            num_negative=128,
+            num_negative_image=128,
+            num_negative_pv=4,
+            margin=1.0,
             model="bert",
             task_specific_tokens=False,
             visualization=False,
@@ -265,7 +267,9 @@ class BertConfig(object):
             self.dynamic_attention = dynamic_attention
             self.with_coattention = with_coattention
             self.objective = objective
-            self.num_negative = num_negative
+            self.num_negative_image = num_negative_image
+            self.num_negative_pv = num_negative_pv
+            self.margin = margin
             self.task_specific_tokens = task_specific_tokens
             self.visualization = visualization
         else:
@@ -2196,14 +2200,16 @@ class BertForMultiModalPreTraining_tri_stru(BertPreTrainedModel):
 
         self.apply(self.init_weights)
         self.visual_target = config.visual_target
-        self.num_negative = config.num_negative
+        self.num_negative_image = config.num_negative_image
+        self.num_negative_pv = config.num_negative_pv
         self.loss_fct = CrossEntropyLoss(ignore_index=-1)
         # structure aggregation module
         self.struc_w1 = nn.Linear(config.hidden_size * 3, config.hidden_size)#.to(devices[3])
         self.struc_w2 = nn.Linear(config.hidden_size, 1)#.to(devices[3])
         self.struc_w3 = nn.Linear(config.hidden_size, config.hidden_size)#.to(devices[3])
         self.struc_w_loss = nn.Linear(config.hidden_size, 2)#.to(devices[3])
-        self.loss_fct_struc = CrossEntropyLoss(ignore_index=-1)
+        # self.loss_fct_struc = CrossEntropyLoss(ignore_index=-1)
+        self.loss_lpm = MarginRankingLoss(margin=config.margin)
 
         if self.visual_target == 0:
             self.vis_criterion = nn.KLDivLoss(reduction="none")
@@ -2367,22 +2373,19 @@ class BertForMultiModalPreTraining_tri_stru(BertPreTrainedModel):
         
         #--------  structure aggregate module ------------
         c_initial = (pooled_output_v + pooled_output_t + pooled_output_pv)/3 #[batch_size,768]
-        #sequence_output_pv [batch_size, 48, 768]
-        
-        # ---- c_initial, sequence_output_pv, index_p, index_v --> c_final & loss_tri------
-        #print(index_p.shape)#(8, 10, 2)
-        #print(index_p)
-        #print(index_v.shape)
-        #print(index_v)
-        #print(sequence_output_pv.shape)#(8,48,768)
-        #print(index_p[:,0,:])
-        
+
+        property_vecs = []
+        value_vecs = []
         for i in range(sequence_output_pv.shape[0]):# item
+            property_vecs.append([])
+            value_vecs.append([])
             for j in range(index_p.shape[1]):# p
                 if index_p[i, j, 0] == 0:
                     break
                 p = torch.mean(sequence_output_pv[i, :, :].index_select(dim=0, index=index_p[i, j, ]), dim=0)##[768] , keepdim=True
                 v = torch.mean(sequence_output_pv[i, :, :].index_select(dim=0, index=index_v[i, j, :]), dim=0)
+                property_vecs[i].append(p)
+                value_vecs[i].append(v)
                 if j == 0:
                     t = torch.unsqueeze(self.struc_w1(torch.cat((c_initial[i], p, v), dim=0)), 0)
                 else:
@@ -2399,23 +2402,47 @@ class BertForMultiModalPreTraining_tri_stru(BertPreTrainedModel):
             
             if i == 0:
                 c_final = torch.unsqueeze(c_initial[i] + self.struc_w3(torch.sum(atten*t, dim=0)), 0)
-                c_final_neg = torch.unsqueeze(c_initial[i+1] + self.struc_w3(torch.sum(atten*t, dim=0)), 0)#错位构造负样本
+                # c_final_neg = torch.unsqueeze(c_initial[i+1] + self.struc_w3(torch.sum(atten*t, dim=0)), 0)#错位构造负样本
             else:
                 c_final = torch.cat((c_final, torch.unsqueeze(c_initial[i] + self.struc_w3(torch.sum(atten*t, dim=0)), 0)), dim=0)
-                c_final_neg = torch.cat((
-                    c_final_neg, torch.unsqueeze(c_initial[(i+1) % sequence_output_pv.shape[0]] + self.struc_w3(torch.sum(atten*t, dim=0)), 0)), dim=0)
-                
-            #print(c_final.shape) #[8, 768]
-            #print(c_final_neg.shape) #[8, 768]
+                # c_final_neg = torch.cat((
+                #     c_final_neg, torch.unsqueeze(c_initial[(i+1) % sequence_output_pv.shape[0]] + self.struc_w3(torch.sum(atten*t, dim=0)), 0)), dim=0)
 
-        if device == "cpu":
-            struc_label = torch.tensor([1]*sequence_output_pv.shape[0]+[0]*sequence_output_pv.shape[0])
-        else:
-            struc_label = torch.tensor([1]*sequence_output_pv.shape[0]+[0]*sequence_output_pv.shape[0]).\
-                cuda(device=device, non_blocking=True)
+        # 计算LPM loss
+        positive_norms = torch.tensor([], device=device)
+        negative_norms = torch.tensor([], device=device)
+        for i in range(c_final.shape[0]):
+            final_entity_vec = c_final[i]
+            for j, (property_vec, value_vec) in enumerate(zip(property_vecs[i], value_vecs[i])):
+                # 负样本类型一：随机替换实体, <ec',  property, value>
+                num_negative_entities = self.num_negative_pv // 2
+                candidates = [k for k in range(c_final.shape[0]) if k != i]
+                if len(candidates) > 0:
+                    positive_norm = torch.norm(final_entity_vec + property_vec - value_vec)
+                    index_negative_entities = random.sample(candidates, min(len(candidates), num_negative_entities))
+                    for k in index_negative_entities:
+                        negative_entity_vec = c_final[k]
+                        negative_norm = torch.norm(negative_entity_vec + property_vec - value_vec)
+                        positive_norms = torch.cat((positive_norms, positive_norm.unsqueeze(0)))
+                        negative_norms = torch.cat((negative_norms, negative_norm.unsqueeze(0)))
 
-        logits = self.struc_w_loss(torch.cat((c_final, c_final_neg), dim=0))
-        loss_struc = self.loss_fct_struc(logits, struc_label)
+                # 负样本类型二：随机替换值, <ec,  property, value'>
+                num_negative_values = self.num_negative_pv - num_negative_entities
+                candidates = [k for k in range(len(property_vecs[i])) if k != j]
+                if len(candidates) > 0:
+                    positive_norm = torch.norm(final_entity_vec + property_vec - value_vec)
+                    index_negative_values = random.sample(candidates, min(len(candidates), num_negative_values))
+                    for k in index_negative_values:
+                        negative_value_vec = value_vecs[i][k]
+                        negative_norm = torch.norm(final_entity_vec + property_vec - negative_value_vec)
+                        positive_norms = torch.cat((positive_norms, positive_norm.unsqueeze(0)))
+                        negative_norms = torch.cat((negative_norms, negative_norm.unsqueeze(0)))
+
+
+        # struc_label = torch.tensor([1]*sequence_output_pv.shape[0]+[0]*sequence_output_pv.shape[0], device=device)
+        # logits = self.struc_w_loss(torch.cat((c_final, c_final_neg), dim=0))
+        struc_label = torch.ones(positive_norms.shape[-1], device=device)
+        loss_struc = self.loss_lpm(positive_norms, negative_norms, struc_label)
         logger.debug(f"LPM loss: {loss_struc}")
 
         return c_initial, c_final, loss_struc
@@ -2667,7 +2694,7 @@ class BertForMultiModalPreTraining_tri_stru(BertPreTrainedModel):
                 ) / max(torch.sum((image_label == 1)), 0)
             elif self.visual_target == 2:
                 # generate negative sampled index.
-                num_negative = self.num_negative
+                num_negative = self.num_negative_image
                 num_across_batch = int(self.num_negative * 0.7)
                 num_inside_batch = int(self.num_negative * 0.3)
 
