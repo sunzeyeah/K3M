@@ -10,7 +10,7 @@ DATA_DIR=${ROOT_DIR}/processed
 OUTPUT_DIR=${ROOT_DIR}/output
 PRETRAINED_MODEL_PATH="/root/autodl-tmp/Data/bert/chinese_roberta_wwm_ext_pytorch"
 MODEL_NAME="roberta_base"
-MAIN="/root/Code/K3M/train_concap_struc.py"
+MAIN="/root/Code/K3M/finetune_item_alignment.py"
 MAX_SEQ_LENGTH=50
 MAX_SEQ_LENGTH_PV=256
 MAX_NUM_PV=30
@@ -29,7 +29,6 @@ python $MAIN \
   --pretrained_model_path $PRETRAINED_MODEL_PATH \
   --config_file "k3m_roberta_base.json" \
   --pretrained_model_weights "roberta_base_weight_names.json" \
-  --do_train \
   --if_pre_sampling 1 \
   --with_coattention \
   --objective 0 \
@@ -42,4 +41,5 @@ python $MAIN \
   --eval_batch_size $EVAL_BATCH_SIZE \
   --learning_rate $LEARNING_RATE \
   --num_train_epochs $NUM_EPOCHS \
-  --log_steps $LOG_STEPS
+  --log_steps $LOG_STEPS \
+  --fp16

@@ -212,18 +212,17 @@ class ConceptCapLoaderTrain_struc(object):
             batch_size=512,
             num_workers=25,
             cache=10000,
-            local_rank=-1,
+            rank=-1,
             objective=0,
             visualization=False,
             serializer=td.LMDBSerializer,
     ):
-        if dist.is_available() and local_rank != -1:
-            # num_replicas = dist.get_world_size()
-            rank = dist.get_rank()
-            data_file = os.path.join(corpus_path, file_name.format(rank))
-        else:
-            data_file = os.path.join(corpus_path, file_name)
-            logger.debug(f"Loading from {data_file}")
+        # if rank != -1:
+        #     data_file = os.path.join(corpus_path, file_name.format(rank))
+        # else:
+        #     data_file = os.path.join(corpus_path, file_name)
+        data_file = os.path.join(corpus_path, file_name)
+        logger.debug(f"Loading from {data_file}")
 
         if serializer == td.NumpySerializer:
             buffer = np.load(data_file, allow_pickle=True)['buffer']

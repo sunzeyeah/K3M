@@ -1127,26 +1127,23 @@ class BertEncoder_tri(nn.Module):
         self.in_batch_pairs = config.in_batch_pairs
         self.fixed_t_layer = config.fixed_t_layer
         self.fixed_v_layer = config.fixed_v_layer
-        layer = BertLayer(config)
-        v_layer = BertImageLayer(config)
-        connect_layer = BertConnectionLayer(config)
-        connect_layer_pv_v = BertConnectionLayer(config)
-        connect_layer_pv_t = BertConnectionLayer_two_text(config)
 
         self.layer = nn.ModuleList(
-            [copy.deepcopy(layer) for _ in range(config.num_hidden_layers)]
+            [BertLayer(config) for _ in range(config.num_hidden_layers)]
         )
         self.v_layer = nn.ModuleList(
-            [copy.deepcopy(v_layer) for _ in range(config.v_num_hidden_layers)]
+            [BertImageLayer(config) for _ in range(config.v_num_hidden_layers)]
         )
-        self.c_layer = nn.ModuleList(
-            [copy.deepcopy(connect_layer) for _ in range(len(config.v_biattention_id))]
-        )
-        self.c_layer_pv_v = nn.ModuleList(
-            [copy.deepcopy(connect_layer_pv_v) for _ in range(len(config.v_biattention_id))])
 
-        self.c_layer_pv_t = nn.ModuleList(
-            [copy.deepcopy(connect_layer_pv_t) for _ in range(len(config.v_biattention_id))])
+        if self.with_coattention:
+            self.c_layer = nn.ModuleList(
+                [BertConnectionLayer(config) for _ in range(len(config.v_biattention_id))]
+            )
+            self.c_layer_pv_v = nn.ModuleList(
+                [BertConnectionLayer(config) for _ in range(len(config.v_biattention_id))])
+
+            self.c_layer_pv_t = nn.ModuleList(
+                [BertConnectionLayer_two_text(config) for _ in range(len(config.v_biattention_id))])
 
     def calculate_for_text_img(  
             self,
@@ -1859,7 +1856,7 @@ class BertPreTrainingHeads(nn.Module):
         # self.tri_seq_relationship = nn.Linear(config.bi_hidden_size * 3, 2)
         self.seq_relationship = nn.Linear(config.hidden_size, 2)
         self.imagePredictions = BertImagePredictionHead(config)
-        self.fusion_method = config.fusion_method
+        # self.fusion_method = config.fusion_method
         self.dropout = nn.Dropout(0.1)
 
     def forward(
@@ -1892,7 +1889,6 @@ class BertPreTrainingHeads(nn.Module):
 
             return prediction_scores_t, prediction_scores_v, prediction_scores_pv, 0, 0, 0, seq_relationship_score_pv_v_pv
 
-        
 
 class BertImagePredictionHead(nn.Module):
     def __init__(self, config):
@@ -2151,51 +2147,49 @@ class BertForMultiModalPreTraining_tri_stru(BertPreTrainedModel):
         super(BertForMultiModalPreTraining_tri_stru, self).__init__(config)
 
         self.bert_tri = BertModel_tri(config)
-        self.cls = BertPreTrainingHeads(
-            config, self.bert_tri.embeddings.word_embeddings.weight
-        )
+        self.cls = BertPreTrainingHeads(config, self.bert_tri.embeddings.word_embeddings.weight)
 
         self.if_pre_sampling = config.if_pre_sampling
-        if self.if_pre_sampling == 0:
-            logger.info('fusion strategy 0, individual + interactive -- mean')
-        elif self.if_pre_sampling == 1:
-            logger.info('fusion strategy 1, individual + interactive -- hard')
-        elif self.if_pre_sampling == 2:
-            logger.info('fusion strategy 2, individual + interactive -- soft')
-        elif self.if_pre_sampling == 3:
-            logger.info('fusion strategy 3, interactive')
-        else:
-            pass
+        # if self.if_pre_sampling == 0:
+        #     logger.info('fusion strategy 0, individual + interactive -- mean')
+        # elif self.if_pre_sampling == 1:
+        #     logger.info('fusion strategy 1, individual + interactive -- hard')
+        # elif self.if_pre_sampling == 2:
+        #     logger.info('fusion strategy 2, individual + interactive -- soft')
+        # elif self.if_pre_sampling == 3:
+        #     logger.info('fusion strategy 3, interactive')
+        # else:
+        #     pass
 
-        self.map_individual_to_bi = nn.Linear(config.hidden_size, config.bi_hidden_size)  
-        self.map_bi_to_individual = nn.Linear(config.bi_hidden_size, config.hidden_size)  
-        
-        self.score_self_v = nn.Linear(config.bi_hidden_size * 3, config.bi_hidden_size)
-        self.score_cross1_v = nn.Linear(config.bi_hidden_size * 3, config.bi_hidden_size)
-        self.score_cross2_v = nn.Linear(config.bi_hidden_size * 3, config.bi_hidden_size)
-        self.score_self_t = nn.Linear(config.hidden_size * 3, config.hidden_size)
-        self.score_cross1_t = nn.Linear(config.hidden_size * 3, config.hidden_size)
-        self.score_cross2_t = nn.Linear(config.hidden_size * 3, config.hidden_size)
-        self.score_self_pv = nn.Linear(config.hidden_size * 3, config.hidden_size)
-        self.score_cross1_pv = nn.Linear(config.hidden_size * 3, config.hidden_size)
-        self.score_cross2_pv = nn.Linear(config.hidden_size * 3, config.hidden_size)
-        
-        self.soft_v = nn.Linear(config.bi_hidden_size * 3, config.bi_hidden_size)
-        self.soft_t = nn.Linear(config.hidden_size * 3, config.hidden_size)
-        self.soft_pv = nn.Linear(config.hidden_size * 3, config.hidden_size)
+        # self.map_individual_to_bi = nn.Linear(config.hidden_size, config.bi_hidden_size)
+        # self.map_bi_to_individual = nn.Linear(config.bi_hidden_size, config.hidden_size)
+
+        # image scores
+        self.score_self_v = nn.Linear(config.bi_hidden_size * 3, config.bi_hidden_size)#.to(devices[0])
+        self.score_cross1_v = nn.Linear(config.bi_hidden_size * 3, config.bi_hidden_size)#.to(devices[0])
+        self.score_cross2_v = nn.Linear(config.bi_hidden_size * 3, config.bi_hidden_size)#.to(devices[0])
+        self.soft_v = nn.Linear(config.bi_hidden_size * 3, config.bi_hidden_size)#.to(devices[0])
+        # title scores
+        self.score_self_t = nn.Linear(config.hidden_size * 3, config.hidden_size)#.to(devices[1])
+        self.score_cross1_t = nn.Linear(config.hidden_size * 3, config.hidden_size)#.to(devices[1])
+        self.score_cross2_t = nn.Linear(config.hidden_size * 3, config.hidden_size)#.to(devices[1])
+        self.soft_t = nn.Linear(config.hidden_size * 3, config.hidden_size)#.to(devices[1])
+        # pv scores
+        self.score_self_pv = nn.Linear(config.hidden_size * 3, config.hidden_size)#.to(devices[2])
+        self.score_cross1_pv = nn.Linear(config.hidden_size * 3, config.hidden_size)#.to(devices[2])
+        self.score_cross2_pv = nn.Linear(config.hidden_size * 3, config.hidden_size)#.to(devices[2])
+        self.soft_pv = nn.Linear(config.hidden_size * 3, config.hidden_size)#.to(devices[2])
 
         self.apply(self.init_weights)
         self.visual_target = config.visual_target
         self.num_negative = config.num_negative
         self.loss_fct = CrossEntropyLoss(ignore_index=-1)
-        
-        self.struc_w1 = nn.Linear(config.hidden_size * 3, config.hidden_size)
-        self.struc_w2 = nn.Linear(config.hidden_size, 1)
-        self.struc_w3 = nn.Linear(config.hidden_size, config.hidden_size)
-        self.struc_w_loss = nn.Linear(config.hidden_size, 2)
+        # structure aggregation module
+        self.struc_w1 = nn.Linear(config.hidden_size * 3, config.hidden_size)#.to(devices[3])
+        self.struc_w2 = nn.Linear(config.hidden_size, 1)#.to(devices[3])
+        self.struc_w3 = nn.Linear(config.hidden_size, config.hidden_size)#.to(devices[3])
+        self.struc_w_loss = nn.Linear(config.hidden_size, 2)#.to(devices[3])
         self.loss_fct_struc = CrossEntropyLoss(ignore_index=-1)
-
-        # print("model's visual target is ", config.visual_target)
 
         if self.visual_target == 0:
             self.vis_criterion = nn.KLDivLoss(reduction="none")
@@ -2336,7 +2330,7 @@ class BertForMultiModalPreTraining_tri_stru(BertPreTrainedModel):
 
         return sequence_output_v, sequence_output_t, sequence_output_pv, pooled_output_v, pooled_output_t, pooled_output_pv
 
-    def structure_aggregator(self, pooled_output_v, pooled_output_t, pooled_output_pv, sequence_output_pv, index_p, index_v):
+    def structure_aggregator(self, pooled_output_v, pooled_output_t, pooled_output_pv, sequence_output_pv, index_p, index_v, device):
         ''' Compute 3 values:
             (1) initial entity embedding = pooled image embedding + pooled title embedding + pooled knowledge graph embedding
             (2) final entity embedding = initial entity embedding + attention-weighted triplets embeddings, aka Structure Aggregation Module
@@ -2399,14 +2393,12 @@ class BertForMultiModalPreTraining_tri_stru(BertPreTrainedModel):
                 
             #print(c_final.shape) #[8, 768]
             #print(c_final_neg.shape) #[8, 768]
-        
-        # TODO: 区分机器是否有GPU
-        device = sequence_output_pv.device
-        if device.type == "cpu":
+
+        if device == "cpu":
             struc_label = torch.tensor([1]*sequence_output_pv.shape[0]+[0]*sequence_output_pv.shape[0])
         else:
-            struc_label=torch.tensor([1]*sequence_output_pv.shape[0]+[0]*sequence_output_pv.shape[0]).\
-                cuda(device=sequence_output_pv.device, non_blocking=True)
+            struc_label = torch.tensor([1]*sequence_output_pv.shape[0]+[0]*sequence_output_pv.shape[0]).\
+                cuda(device=device, non_blocking=True)
 
         logits = self.struc_w_loss(torch.cat((c_final, c_final_neg), dim=0))
         loss_struc = self.loss_fct_struc(logits, struc_label)
@@ -2465,7 +2457,7 @@ class BertForMultiModalPreTraining_tri_stru(BertPreTrainedModel):
             all_attention_mask_t_pv,
             individual_txt, individual_pv, individual_v)
         
-        c_initial, c_final, loss_struc = self.structure_aggregator(pooled_output_v, pooled_output_t, pooled_output_pv, sequence_output_pv, index_p, index_v, )
+        c_initial, c_final, loss_struc = self.structure_aggregator(pooled_output_v, pooled_output_t, pooled_output_pv, sequence_output_pv, index_p, index_v, device)
         
         if True:  
             prediction_scores_t, prediction_scores_v, prediction_scores_pv, seq_relationship_score, seq_relationship_score_t_pv, \
