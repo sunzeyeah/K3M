@@ -798,7 +798,7 @@ def train_single(args, config, device):
     # 创建data loader
     train_dataset = ConceptCapLoaderTrain_struc(
         args.data_dir,
-        args.file_name.format("train"),
+        args.file_name.format("train+valid"),
         tokenizer,
         max_seq_len=args.max_seq_length,
         max_seq_len_pv=args.max_seq_length_pv,
