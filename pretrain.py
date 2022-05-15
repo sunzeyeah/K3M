@@ -808,7 +808,6 @@ def train_single(args, config, device):
         visual_target=args.visual_target,
         v_target_size=config.v_target_size,
         num_workers=args.num_workers,
-        local_rank=args.local_rank,
         objective=args.objective,
         cache=args.cache,
         serializer=td.NumpySerializer if sys.platform.startswith("win") else td.LMDBSerializer
