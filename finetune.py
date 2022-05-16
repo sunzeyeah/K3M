@@ -890,8 +890,7 @@ def train_single(args, config, device):
                         image_feat_2,
                         image_loc_2,
                         image_mask_2,
-                        output_all_attention_masks=False,
-                        device=device
+                        output_all_attention_masks=False
                     )
             else:
                 item_embeddings_1, item_embeddings_2, logits, probs, loss = model(
@@ -918,8 +917,7 @@ def train_single(args, config, device):
                     image_feat_2,
                     image_loc_2,
                     image_mask_2,
-                    output_all_attention_masks=False,
-                    device=device
+                    output_all_attention_masks=False
                 )
 
             try:
@@ -1035,8 +1033,7 @@ def train_single(args, config, device):
                             image_feat_2,
                             image_loc_2,
                             image_mask_2,
-                            output_all_attention_masks=False,
-                            device=device
+                            output_all_attention_masks=False
                         )
                 else:
                     item_embeddings_1, item_embeddings_2, logits, probs, loss = model(
@@ -1063,8 +1060,7 @@ def train_single(args, config, device):
                         image_feat_2,
                         image_loc_2,
                         image_mask_2,
-                        output_all_attention_masks=False,
-                        device=device
+                        output_all_attention_masks=False
                     )
 
                 probs = probs.cpu().detach().numpy()
@@ -1131,6 +1127,7 @@ def get_parser():
     parser.add_argument("--log_steps", default=1, type=int, help="log model training process every n steps")
     parser.add_argument("--cache", default=5000,  type=int, help="whether use chunck for parallel training.")
     # training
+    parser.add_argument("--use_image", action="store_true", help="是否使用图片模态")
     parser.add_argument("--do_eval", action="store_true", help="是否进行模型验证")
     parser.add_argument("--seed", default=42, type=int, help="random seed for initialization")
     parser.add_argument("--no_cuda", action="store_true", help="Whether not to use CUDA when available")
@@ -1204,6 +1201,7 @@ def main():
         config.model = "roberta"
     if args.freeze > config.t_biattention_id[0]:
         config.fixed_t_layer = config.t_biattention_id[0]
+    config.use_image = args.use_image
     config.with_coattention = args.with_coattention
     config.dynamic_attention = args.dynamic_attention
     config.if_pre_sampling = args.if_pre_sampling
