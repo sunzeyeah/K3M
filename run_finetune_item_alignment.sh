@@ -9,7 +9,8 @@ ROOT_DIR="/root/autodl-tmp/Data/ccks2022/task9"
 DATA_DIR=${ROOT_DIR}/processed
 OUTPUT_DIR=${ROOT_DIR}/output
 PRETRAINED_BERT_PATH="/root/autodl-tmp/Data/bert/chinese_roberta_wwm_ext_pytorch"
-PRETRAINED_MODEL_PATH="${OUTPUT_DIR}/k3m_roberta_base_12l_12h/K3M_struc_presample-1_epoch-4.bin"
+#PRETRAINED_MODEL_PATH="${OUTPUT_DIR}/k3m_roberta_base_12l_12h/K3M_struc_presample-1_epoch-4.bin"
+PRETRAINED_MODEL_PATH="${OUTPUT_DIR}/k3m_item_alignment_roberta_base_12l_12h/K3M_item_alignment-1_epoch-0.bin"
 MODEL_NAME="roberta_base"
 MAIN="/root/Code/K3M/finetune.py"
 MAX_SEQ_LENGTH=50
@@ -41,6 +42,7 @@ python $MAIN \
   --train_batch_size $TRAIN_BATCH_SIZE \
   --eval_batch_size $EVAL_BATCH_SIZE \
   --learning_rate $LEARNING_RATE \
+  --start_epoch 1 \
   --num_train_epochs $NUM_EPOCHS \
   --log_steps $LOG_STEPS \
   --fp16
