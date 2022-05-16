@@ -192,6 +192,7 @@ class BertConfig(object):
             model="bert",
             task_specific_tokens=False,
             visualization=False,
+            use_image=True,
     ):
 
         """Constructs BertConfig.
@@ -272,6 +273,7 @@ class BertConfig(object):
             self.margin = margin
             self.task_specific_tokens = task_specific_tokens
             self.visualization = visualization
+            self.use_image=use_image
         else:
             raise ValueError(
                 "First argument must be either a vocabulary size (int)"
@@ -882,9 +884,7 @@ class BertBiAttention_two_text(nn.Module):
             input_tensor1,
             attention_mask1,
             input_tensor2,
-            attention_mask2,
-            co_attention_mask=None,
-            use_co_attention_mask=False,
+            attention_mask2
     ):
 
         # for vision input.
@@ -1089,17 +1089,13 @@ class BertConnectionLayer_two_text(nn.Module):
             input_tensor1,
             attention_mask1,
             input_tensor2,
-            attention_mask2,
-            co_attention_mask=None,
-            use_co_attention_mask=False,
+            attention_mask2
     ):
         bi_output1, bi_output2, co_attention_probs = self.biattention(
             input_tensor1,
             attention_mask1,
             input_tensor2,
-            attention_mask2,
-            co_attention_mask,
-            use_co_attention_mask,
+            attention_mask2
         )
 
         attention_output1, attention_output2 = self.biOutput(
@@ -1124,6 +1120,7 @@ class BertEncoder(nn.Module):
     '''
     def __init__(self, config):
         super(BertEncoder, self).__init__()
+        self.use_image = config.use_image
         self.FAST_MODE = config.fast_mode
         self.with_coattention = config.with_coattention
         self.v_biattention_id = config.v_biattention_id  # [0, 1, 2, 3, 4, 5],
@@ -1132,19 +1129,24 @@ class BertEncoder(nn.Module):
         self.fixed_t_layer = config.fixed_t_layer
         self.fixed_v_layer = config.fixed_v_layer
 
+        # bert laysers
         self.layer = nn.ModuleList(
             [BertLayer(config) for _ in range(config.num_hidden_layers)]
         )
-        self.v_layer = nn.ModuleList(
-            [BertImageLayer(config) for _ in range(config.v_num_hidden_layers)]
-        )
+
+        # image bert layers
+        if self.use_image:
+            self.v_layer = nn.ModuleList(
+                [BertImageLayer(config) for _ in range(config.v_num_hidden_layers)]
+            )
 
         if self.with_coattention:
-            self.c_layer = nn.ModuleList(
-                [BertConnectionLayer(config) for _ in range(len(config.v_biattention_id))]
-            )
-            self.c_layer_pv_v = nn.ModuleList(
-                [BertConnectionLayer(config) for _ in range(len(config.v_biattention_id))])
+            if self.use_image:
+                self.c_layer = nn.ModuleList(
+                    [BertConnectionLayer(config) for _ in range(len(config.v_biattention_id))]
+                )
+                self.c_layer_pv_v = nn.ModuleList(
+                    [BertConnectionLayer(config) for _ in range(len(config.v_biattention_id))])
 
             self.c_layer_pv_t = nn.ModuleList(
                 [BertConnectionLayer_two_text(config) for _ in range(len(config.v_biattention_id))])
@@ -1508,11 +1510,9 @@ class BertEncoder(nn.Module):
     def calculate_for_two_text(  
             self,
             txt_embedding,
-            image_embedding,
+            txt_embedding_pv,
             txt_attention_mask,
-            txt_attention_mask2,
-            image_attention_mask,
-            co_attention_mask=None,
+            txt_attention_mask_pv,
             output_all_encoded_layers=True,
             output_all_attention_masks=False,
     ):
@@ -1528,7 +1528,7 @@ class BertEncoder(nn.Module):
         all_attention_mask_c = []
 
         batch_size, num_words, t_hidden_size = txt_embedding.size()
-        _, num_regions, v_hidden_size = image_embedding.size()
+        _, num_regions, v_hidden_size = txt_embedding_pv.size()
 
         use_co_attention_mask = False
         for v_layer_id, t_layer_id in zip(self.t_biattention_id, self.t_biattention_id): 
@@ -1557,9 +1557,9 @@ class BertEncoder(nn.Module):
 
             for idx in range(v_start, self.fixed_t_layer):  
                 with torch.no_grad():
-                    image_embedding, image_attention_probs = self.layer[idx]( 
-                        image_embedding,
-                        image_attention_mask,
+                    txt_embedding_pv, image_attention_probs = self.layer[idx](
+                        txt_embedding_pv,
+                        txt_attention_mask_pv,
                         # txt_embedding,
                         # txt_attention_mask2,
                     )
@@ -1569,9 +1569,9 @@ class BertEncoder(nn.Module):
                         all_attnetion_mask_v.append(image_attention_probs)
 
             for idx in range(v_start, v_end):
-                image_embedding, image_attention_probs = self.layer[idx](  # v_layer变layer
-                    image_embedding,
-                    image_attention_mask,
+                txt_embedding_pv, image_attention_probs = self.layer[idx](  # v_layer变layer
+                    txt_embedding_pv,
+                    txt_attention_mask_pv,
                     # txt_embedding,
                     # txt_attention_mask2,
                 )
@@ -1581,14 +1581,14 @@ class BertEncoder(nn.Module):
 
             if count == 0 and self.in_batch_pairs:
                 # new batch size is the batch_size ^2
-                image_embedding = (
-                    image_embedding.unsqueeze(0)
+                txt_embedding_pv = (
+                    txt_embedding_pv.unsqueeze(0)
                         .expand(batch_size, batch_size, num_regions, v_hidden_size)
                         .contiguous()
                         .view(batch_size * batch_size, num_regions, v_hidden_size)
                 )
-                image_attention_mask = (
-                    image_attention_mask.unsqueeze(0)
+                txt_attention_mask_pv = (
+                    txt_attention_mask_pv.unsqueeze(0)
                         .expand(batch_size, batch_size, 1, 1, num_regions)
                         .contiguous()
                         .view(batch_size * batch_size, 1, 1, num_regions)
@@ -1606,21 +1606,21 @@ class BertEncoder(nn.Module):
                         .contiguous()
                         .view(batch_size * batch_size, 1, 1, num_words)
                 )
-                co_attention_mask = (
-                    co_attention_mask.unsqueeze(1)
-                        .expand(batch_size, batch_size, 1, num_regions, num_words)
-                        .contiguous()
-                        .view(batch_size * batch_size, 1, num_regions, num_words)
-                )
+                # co_attention_mask = (
+                #     co_attention_mask.unsqueeze(1)
+                #         .expand(batch_size, batch_size, 1, num_regions, num_words)
+                #         .contiguous()
+                #         .view(batch_size * batch_size, 1, num_regions, num_words)
+                # )
 
             if count == 0 and self.FAST_MODE:
                 txt_embedding = txt_embedding.expand(
-                    image_embedding.size(0),
+                    txt_embedding_pv.size(0),
                     txt_embedding.size(1),
                     txt_embedding.size(2),
                 )
                 txt_attention_mask = txt_attention_mask.expand(
-                    image_embedding.size(0),
+                    txt_embedding_pv.size(0),
                     txt_attention_mask.size(1),
                     txt_attention_mask.size(2),
                     txt_attention_mask.size(3),
@@ -1628,15 +1628,15 @@ class BertEncoder(nn.Module):
 
             if self.with_coattention:
                 # do the bi attention.
-                image_embedding, txt_embedding, co_attention_probs = self.c_layer_pv_t[
+                txt_embedding_pv, txt_embedding, co_attention_probs = self.c_layer_pv_t[
                     count
                 ](
-                    image_embedding,
-                    image_attention_mask,
+                    txt_embedding_pv,
+                    txt_attention_mask_pv,
                     txt_embedding,
                     txt_attention_mask,
-                    co_attention_mask,
-                    use_co_attention_mask,
+                    # co_attention_mask,
+                    # use_co_attention_mask,
                 )
                 # print('text&pv-->count',count)
                 # print(co_attention_probs.size())
@@ -1651,12 +1651,12 @@ class BertEncoder(nn.Module):
 
             if output_all_encoded_layers:
                 all_encoder_layers_t.append(txt_embedding)
-                all_encoder_layers_v.append(image_embedding)
+                all_encoder_layers_v.append(txt_embedding_pv)
 
         for idx in range(v_start, len(self.layer)):  
-            image_embedding, image_attention_probs = self.layer[idx]( 
-                image_embedding,
-                image_attention_mask,
+            txt_embedding_pv, image_attention_probs = self.layer[idx](
+                txt_embedding_pv,
+                txt_attention_mask_pv,
                 # txt_embedding,
                 # txt_attention_mask2,
             )
@@ -1675,7 +1675,7 @@ class BertEncoder(nn.Module):
         # add the end part to finish.
         if not output_all_encoded_layers:
             all_encoder_layers_t.append(txt_embedding)
-            all_encoder_layers_v.append(image_embedding)
+            all_encoder_layers_v.append(txt_embedding_pv)
 
         return (
             all_encoder_layers_t,
@@ -1699,39 +1699,46 @@ class BertEncoder(nn.Module):
             output_all_encoded_layers=True,
             output_all_attention_masks=False,
     ):
-        
-        (all_encoder_layers_t_with_v, all_encoder_layers_v_with_t, (
-        all_attention_mask_t_with_v, all_attnetion_mask_v_with_t,
-        all_attention_mask_c_v_t)) = self.calculate_for_text_img(txt_embedding=txt_embedding,
-                                                                 image_embedding=image_embedding,
-                                                                 txt_attention_mask=txt_attention_mask,
-                                                                 txt_attention_mask2=txt_attention_mask2,
-                                                                 image_attention_mask=image_attention_mask,
-                                                                 co_attention_mask=co_attention_mask,
-                                                                 output_all_encoded_layers=output_all_encoded_layers,
-                                                                 output_all_attention_masks=output_all_attention_masks, )
+        if self.use_image:
+            (all_encoder_layers_t_with_v, all_encoder_layers_v_with_t, (
+            all_attention_mask_t_with_v, all_attnetion_mask_v_with_t,
+            all_attention_mask_c_v_t)) = self.calculate_for_text_img(txt_embedding=txt_embedding,
+                                                                     image_embedding=image_embedding,
+                                                                     txt_attention_mask=txt_attention_mask,
+                                                                     txt_attention_mask2=txt_attention_mask2,
+                                                                     image_attention_mask=image_attention_mask,
+                                                                     co_attention_mask=co_attention_mask,
+                                                                     output_all_encoded_layers=output_all_encoded_layers,
+                                                                     output_all_attention_masks=output_all_attention_masks, )
 
-        
-        (all_encoder_layers_pv_with_v, all_encoder_layers_v_with_pv, (
-        all_attention_mask_pv_with_v, all_attnetion_mask_v_with_pv,
-        all_attention_mask_c_v_pv)) = self.calculate_for_pv_img(txt_embedding=txt_embedding_pv,
-                                                                image_embedding=image_embedding,
-                                                                txt_attention_mask=txt_attention_mask_pv,
-                                                                txt_attention_mask2=txt_attention_mask2_pv,
-                                                                image_attention_mask=image_attention_mask,
-                                                                co_attention_mask=co_attention_mask,
-                                                                output_all_encoded_layers=output_all_encoded_layers,
-                                                                output_all_attention_masks=output_all_attention_masks, )
-
+            (all_encoder_layers_pv_with_v, all_encoder_layers_v_with_pv, (
+            all_attention_mask_pv_with_v, all_attnetion_mask_v_with_pv,
+            all_attention_mask_c_v_pv)) = self.calculate_for_pv_img(txt_embedding=txt_embedding_pv,
+                                                                    image_embedding=image_embedding,
+                                                                    txt_attention_mask=txt_attention_mask_pv,
+                                                                    txt_attention_mask2=txt_attention_mask2_pv,
+                                                                    image_attention_mask=image_attention_mask,
+                                                                    co_attention_mask=co_attention_mask,
+                                                                    output_all_encoded_layers=output_all_encoded_layers,
+                                                                    output_all_attention_masks=output_all_attention_masks, )
+        else:
+            all_encoder_layers_t_with_v = None
+            all_encoder_layers_v_with_t = None
+            all_attention_mask_t_with_v = None
+            all_attnetion_mask_v_with_t = None
+            all_attention_mask_c_v_t = None
+            all_encoder_layers_pv_with_v = None
+            all_encoder_layers_v_with_pv = None
+            all_attention_mask_pv_with_v = None
+            all_attnetion_mask_v_with_pv = None
+            all_attention_mask_c_v_pv = None
         
         (all_encoder_layers_t_with_pv, all_encoder_layers_pv_with_t, (
         all_attention_mask_t_with_pv, all_attnetion_mask_pv_with_t,
         all_attention_mask_c_t_pv)) = self.calculate_for_two_text(txt_embedding=txt_embedding,
-                                                                  image_embedding=txt_embedding_pv,
+                                                                  txt_embedding_pv=txt_embedding_pv,
                                                                   txt_attention_mask=txt_attention_mask,
-                                                                  txt_attention_mask2=txt_attention_mask2,
-                                                                  image_attention_mask=txt_attention_mask_pv,
-                                                                  co_attention_mask=txt_attention_mask2_pv,
+                                                                  txt_attention_mask_pv=txt_attention_mask_pv,
                                                                   output_all_encoded_layers=output_all_encoded_layers,
                                                                   output_all_attention_masks=output_all_attention_masks, )
 
@@ -1855,13 +1862,15 @@ class BertOnlyNSPHead(nn.Module):
 class BertPreTrainingHeads(nn.Module):
     def __init__(self, config, bert_model_embedding_weights):
         super(BertPreTrainingHeads, self).__init__()
+        self.use_image = config.use_image
         self.predictions = BertLMPredictionHead(config, bert_model_embedding_weights)
+        self.seq_relationship = nn.Linear(config.hidden_size, 2)
+        if self.use_image:
+            self.imagePredictions = BertImagePredictionHead(config)
+        self.dropout = nn.Dropout(0.1)
         # self.bi_seq_relationship = nn.Linear(config.bi_hidden_size, 2)
         # self.tri_seq_relationship = nn.Linear(config.bi_hidden_size * 3, 2)
-        self.seq_relationship = nn.Linear(config.hidden_size, 2)
-        self.imagePredictions = BertImagePredictionHead(config)
         # self.fusion_method = config.fusion_method
-        self.dropout = nn.Dropout(0.1)
 
     def forward(
             self, sequence_output_t=None, sequence_output_v=None, pooled_output_t=None, pooled_output_v=None,
@@ -1869,20 +1878,26 @@ class BertPreTrainingHeads(nn.Module):
     ):
         if True:
 
-            if (pooled_output_t is not None) and (pooled_output_v is not None) and (pooled_output_pv is not None):
-                # pooled_output_t_v_pv = torch.cat((pooled_output_t, pooled_output_v, pooled_output_pv), 1)
-                pooled_output_t_v_pv = self.dropout(pooled_output_t + pooled_output_v + pooled_output_pv)
+            if (pooled_output_t is not None) or (pooled_output_v is not None) or (pooled_output_pv is not None):
+                if pooled_output_v is None:
+                    pooled_output = pooled_output_t + pooled_output_pv
+                else:
+                    pooled_output = pooled_output_t + pooled_output_pv + pooled_output_v
+                pooled_output_t_v_pv = self.dropout(pooled_output)
                 seq_relationship_score_pv_v_pv = self.seq_relationship(pooled_output_t_v_pv)
             else:
                 seq_relationship_score_pv_v_pv = 0
+
             if sequence_output_t is not None:
                 prediction_scores_t = self.predictions(sequence_output_t)
             else:
                 prediction_scores_t = 0
+
             if sequence_output_pv is not None:
                 prediction_scores_pv = self.predictions(sequence_output_pv)
             else:
                 prediction_scores_pv = 0
+
             if sequence_output_v is not None:
                 prediction_scores_v = self.imagePredictions(sequence_output_v)
             else:
@@ -2152,17 +2167,19 @@ class BertForMultiModalPreTraining_tri_stru(BertPreTrainedModel):
 
     def __init__(self, config):
         super(BertForMultiModalPreTraining_tri_stru, self).__init__(config)
-
+        # whether to use image mode
+        self.use_image = config.use_image
         # Bert Model Tri
         if config.model == "bert":
             self.embeddings = BertEmbeddings(config)
         elif config.model == "roberta":
             self.embeddings = RobertaEmbeddings(config)
         self.task_specific_tokens = config.task_specific_tokens
-        self.v_embeddings = BertImageEmbeddings(config)
         self.encoder = BertEncoder(config)
         self.t_pooler = BertTextPooler(config)
-        self.v_pooler = BertImagePooler(config)
+        if self.use_image:
+            self.v_embeddings = BertImageEmbeddings(config)
+            self.v_pooler = BertImagePooler(config)
 
         # Bert Head Tri
         self.cls = BertPreTrainingHeads(config, self.embeddings.word_embeddings.weight)
@@ -2179,30 +2196,41 @@ class BertForMultiModalPreTraining_tri_stru(BertPreTrainedModel):
         # else:
         #     pass
 
-        self.map_individual_to_bi = nn.Linear(config.hidden_size, config.bi_hidden_size)
-        self.map_bi_to_individual = nn.Linear(config.bi_hidden_size, config.hidden_size)
+        if self.use_image:
+            num_modes = 3
+            self.map_individual_to_bi = nn.Linear(config.hidden_size, config.bi_hidden_size)
+            self.map_bi_to_individual = nn.Linear(config.bi_hidden_size, config.hidden_size)
+            # image scores
+            self.score_self_v = nn.Linear(config.bi_hidden_size * num_modes, config.bi_hidden_size)#.to(devices[0])
+            self.score_cross1_v = nn.Linear(config.bi_hidden_size * num_modes, config.bi_hidden_size)#.to(devices[0])
+            self.score_cross2_v = nn.Linear(config.bi_hidden_size * num_modes, config.bi_hidden_size)#.to(devices[0])
+            self.soft_v = nn.Linear(config.bi_hidden_size * num_modes, config.bi_hidden_size)#.to(devices[0])
+            self.visual_target = config.visual_target
+            self.num_negative_image = config.num_negative_image
+            if self.visual_target == 0:
+                self.vis_criterion = nn.KLDivLoss(reduction="none")
+            elif self.visual_target == 1:
+                self.vis_criterion = nn.MSELoss(reduction="none")
+            elif self.visual_target == 2:
+                self.vis_criterion = CrossEntropyLoss()
+        else:
+            num_modes = 2
 
-        # image scores
-        self.score_self_v = nn.Linear(config.bi_hidden_size * 3, config.bi_hidden_size)#.to(devices[0])
-        self.score_cross1_v = nn.Linear(config.bi_hidden_size * 3, config.bi_hidden_size)#.to(devices[0])
-        self.score_cross2_v = nn.Linear(config.bi_hidden_size * 3, config.bi_hidden_size)#.to(devices[0])
-        self.soft_v = nn.Linear(config.bi_hidden_size * 3, config.bi_hidden_size)#.to(devices[0])
         # title scores
-        self.score_self_t = nn.Linear(config.hidden_size * 3, config.hidden_size)#.to(devices[1])
-        self.score_cross1_t = nn.Linear(config.hidden_size * 3, config.hidden_size)#.to(devices[1])
-        self.score_cross2_t = nn.Linear(config.hidden_size * 3, config.hidden_size)#.to(devices[1])
-        self.soft_t = nn.Linear(config.hidden_size * 3, config.hidden_size)#.to(devices[1])
+        self.score_self_t = nn.Linear(config.hidden_size * num_modes, config.hidden_size)#.to(devices[1])
+        self.score_cross1_t = nn.Linear(config.hidden_size * num_modes, config.hidden_size)#.to(devices[1])
+        self.score_cross2_t = nn.Linear(config.hidden_size * num_modes, config.hidden_size)#.to(devices[1])
+        self.soft_t = nn.Linear(config.hidden_size * num_modes, config.hidden_size)#.to(devices[1])
         # pv scores
-        self.score_self_pv = nn.Linear(config.hidden_size * 3, config.hidden_size)#.to(devices[2])
-        self.score_cross1_pv = nn.Linear(config.hidden_size * 3, config.hidden_size)#.to(devices[2])
-        self.score_cross2_pv = nn.Linear(config.hidden_size * 3, config.hidden_size)#.to(devices[2])
-        self.soft_pv = nn.Linear(config.hidden_size * 3, config.hidden_size)#.to(devices[2])
+        self.score_self_pv = nn.Linear(config.hidden_size * num_modes, config.hidden_size)#.to(devices[2])
+        self.score_cross1_pv = nn.Linear(config.hidden_size * num_modes, config.hidden_size)#.to(devices[2])
+        self.score_cross2_pv = nn.Linear(config.hidden_size * num_modes, config.hidden_size)#.to(devices[2])
+        self.soft_pv = nn.Linear(config.hidden_size * num_modes, config.hidden_size)#.to(devices[2])
 
         self.apply(self.init_weights)
-        self.visual_target = config.visual_target
-        self.num_negative_image = config.num_negative_image
+
         self.num_negative_pv = config.num_negative_pv
-        self.loss_fct = CrossEntropyLoss(ignore_index=-1)
+        self.loss_mlm = CrossEntropyLoss(ignore_index=-1)
         # structure aggregation module
         self.struc_w1 = nn.Linear(config.hidden_size * 3, config.hidden_size)#.to(devices[3])
         self.struc_w2 = nn.Linear(config.hidden_size, 1)#.to(devices[3])
@@ -2210,13 +2238,6 @@ class BertForMultiModalPreTraining_tri_stru(BertPreTrainedModel):
         # self.struc_w_loss = nn.Linear(config.hidden_size, 2)#.to(devices[3])
         # self.loss_fct_struc = CrossEntropyLoss(ignore_index=-1)
         self.loss_lpm = MarginRankingLoss(margin=config.margin)
-
-        if self.visual_target == 0:
-            self.vis_criterion = nn.KLDivLoss(reduction="none")
-        elif self.visual_target == 1:
-            self.vis_criterion = nn.MSELoss(reduction="none")
-        elif self.visual_target == 2:
-            self.vis_criterion = CrossEntropyLoss()
 
         self.tie_weights()
 
@@ -2285,72 +2306,89 @@ class BertForMultiModalPreTraining_tri_stru(BertPreTrainedModel):
 
         return sequence_output
 
-    def pre_sampling_sequence(self, individual_sequence=None, sequence_c1=None, sequence_c2=None,
+    def pre_sampling_sequence(self, individual_sequence, sequence_c1=None, sequence_c2=None,
                               modality=None):  # modality = v,t,pv
+        if individual_sequence is None:
+            return None
+
         individual_sequence = F.relu(individual_sequence)
-        sequence_c1 = F.relu(sequence_c1)
-        sequence_c2 = F.relu(sequence_c2)  # 16,36,1024
-        feature_list = (individual_sequence, sequence_c1, sequence_c2)
+        if sequence_c1 is not None:
+            sequence_c1 = F.relu(sequence_c1)
+        if sequence_c2 is not None:
+            sequence_c2 = F.relu(sequence_c2)  # 16,36,1024
+        feature_list = tuple(seq for seq in [individual_sequence, sequence_c1, sequence_c2] if seq is not None)
+        alpha_s, alpha_c1, alpha_c2 = None, None, None
         if modality == 'v':
             alpha_s = torch.unsqueeze(F.sigmoid(self.score_self_v(torch.cat(feature_list, 2))), dim=2)
-            alpha_c1 = torch.unsqueeze(F.sigmoid(self.score_cross1_v(torch.cat(feature_list, 2))), dim=2)
-            alpha_c2 = torch.unsqueeze(F.sigmoid(self.score_cross2_v(torch.cat(feature_list, 2))), dim=2)
+            if sequence_c1 is not None:
+                alpha_c1 = torch.unsqueeze(F.sigmoid(self.score_cross1_v(torch.cat(feature_list, 2))), dim=2)
+            if sequence_c2 is not None:
+                alpha_c2 = torch.unsqueeze(F.sigmoid(self.score_cross2_v(torch.cat(feature_list, 2))), dim=2)
         elif modality == 't':
             alpha_s = torch.unsqueeze(F.sigmoid(self.score_self_t(torch.cat(feature_list, 2))), dim=2)
-            alpha_c1 = torch.unsqueeze(F.sigmoid(self.score_cross1_t(torch.cat(feature_list, 2))), dim=2)
-            alpha_c2 = torch.unsqueeze(F.sigmoid(self.score_cross2_t(torch.cat(feature_list, 2))), dim=2)
+            if sequence_c1 is not None:
+                alpha_c1 = torch.unsqueeze(F.sigmoid(self.score_cross1_t(torch.cat(feature_list, 2))), dim=2)
+            if sequence_c2 is not None:
+                alpha_c2 = torch.unsqueeze(F.sigmoid(self.score_cross2_t(torch.cat(feature_list, 2))), dim=2)
         elif modality == 'pv':
             alpha_s = torch.unsqueeze(F.sigmoid(self.score_self_pv(torch.cat(feature_list, 2))), dim=2)
-            alpha_c1 = torch.unsqueeze(F.sigmoid(self.score_cross1_pv(torch.cat(feature_list, 2))), dim=2)
-            alpha_c2 = torch.unsqueeze(F.sigmoid(self.score_cross2_pv(torch.cat(feature_list, 2))), dim=2)
+            if sequence_c1 is not None:
+                alpha_c1 = torch.unsqueeze(F.sigmoid(self.score_cross1_pv(torch.cat(feature_list, 2))), dim=2)
+            if sequence_c2 is not None:
+                alpha_c2 = torch.unsqueeze(F.sigmoid(self.score_cross2_pv(torch.cat(feature_list, 2))), dim=2)
 
-        ak = torch.cat((alpha_s, alpha_c1, alpha_c2), 2)  # 
+        alphas = tuple(alpha for alpha in [alpha_s, alpha_c1, alpha_c2] if alpha is not None)
+        ak = torch.cat(alphas, 2)  #
         a_index = F.gumbel_softmax(ak, hard=True, dim=2)  #
-        sequence_output = individual_sequence * (a_index[:, :, 0, :].squeeze(dim=2)) + sequence_c1 * (
-            a_index[:, :, 1, :].squeeze(dim=2)) + sequence_c2 * (a_index[:, :, 2, :].squeeze(dim=2))
+        i = 0
+        sequence_output = individual_sequence * (a_index[:, :, i, :].squeeze(dim=2))
+        if alpha_c1 is not None:
+            i += 1
+            sequence_output += sequence_c1 * (a_index[:, :, i, :].squeeze(dim=2))
+        if alpha_c2 is not None:
+            i += 1
+            sequence_output += sequence_c2 * (a_index[:, :, i, :].squeeze(dim=2))
+
         return sequence_output
 
     def get_sequence_pooled_output_final(self,
-                                         sequence_output_t, sequence_output_v,
-                                         all_attention_mask,
+                                         sequence_output_t_with_v, sequence_output_v_with_t,
                                          sequence_output_pv_with_v, sequence_output_v_with_pv,
-                                         all_attention_mask_v_pv,
                                          sequence_output_t_with_pv, sequence_output_pv_with_t,
-                                         all_attention_mask_t_pv,
                                          individual_txt, individual_pv, individual_v):
-        if self.if_pre_sampling == 1:  # hard 
-            sequence_output_v = self.pre_sampling_sequence(individual_v, sequence_output_v, sequence_output_v_with_pv,
+        if self.if_pre_sampling == 1:  # hard
+            sequence_output_v = self.pre_sampling_sequence(individual_v, sequence_output_v_with_t, sequence_output_v_with_pv,
                                                            modality='v')  # 1024
-            sequence_output_t = self.pre_sampling_sequence(individual_txt, sequence_output_t, sequence_output_t_with_pv,
+            sequence_output_t = self.pre_sampling_sequence(individual_txt, sequence_output_t_with_v, sequence_output_t_with_pv,
                                                            modality='t')  # 768
             sequence_output_pv = self.pre_sampling_sequence(individual_pv, sequence_output_pv_with_v,
                                                             sequence_output_pv_with_t, modality='pv')  # 768
-
         elif self.if_pre_sampling == 0:  # mean
-            sequence_output_v = (individual_v + sequence_output_v + sequence_output_v_with_pv) / 3
-            sequence_output_t = (individual_txt + sequence_output_t + sequence_output_t_with_pv) / 3
+            sequence_output_v = (individual_v + sequence_output_v_with_t + sequence_output_v_with_pv) / 3
+            sequence_output_t = (individual_txt + sequence_output_t_with_v + sequence_output_t_with_pv) / 3
             sequence_output_pv = (individual_pv + sequence_output_pv_with_v + sequence_output_pv_with_t) / 3
-
         elif self.if_pre_sampling == 2:  # soft
-            sequence_output_v = self.pre_sampling_sequence_soft(individual_v, sequence_output_v,
+            sequence_output_v = self.pre_sampling_sequence_soft(individual_v, sequence_output_v_with_t,
                                                                 sequence_output_v_with_pv, modality='v')  # 1024
-            sequence_output_t = self.pre_sampling_sequence_soft(individual_txt, sequence_output_t,
+            sequence_output_t = self.pre_sampling_sequence_soft(individual_txt, sequence_output_t_with_v,
                                                                 sequence_output_t_with_pv, modality='t')  # 768
             sequence_output_pv = self.pre_sampling_sequence_soft(individual_pv, sequence_output_pv_with_v,
                                                                  sequence_output_pv_with_t, modality='pv')  # 768
-
-        elif self.if_pre_sampling == 3:  # no fusoin
-            sequence_output_v = (sequence_output_v + sequence_output_v_with_pv) / 2
-            sequence_output_t = (sequence_output_t + sequence_output_t_with_pv) / 2
+        else:  # no fusoin
+            sequence_output_v = (sequence_output_v_with_t + sequence_output_v_with_pv) / 2
+            sequence_output_t = (sequence_output_t_with_v + sequence_output_t_with_pv) / 2
             sequence_output_pv = (sequence_output_pv_with_v + sequence_output_pv_with_t) / 2
 
-        pooled_output_v = self.map_bi_to_individual(torch.mean(sequence_output_v[:, 1:, :], dim=1))  # 1024-768
+        if self.use_image:
+            pooled_output_v = self.map_bi_to_individual(torch.mean(sequence_output_v[:, 1:, :], dim=1))  # 1024-768
+        else:
+            pooled_output_v = None
         pooled_output_t = torch.mean(sequence_output_t[:, 1:, :], dim=1)  # 768
         pooled_output_pv = torch.mean(sequence_output_pv[:, 1:, :], dim=1)  # 768
 
         return sequence_output_v, sequence_output_t, sequence_output_pv, pooled_output_v, pooled_output_t, pooled_output_pv
 
-    def structure_aggregator(self, pooled_output_v, pooled_output_t, pooled_output_pv, sequence_output_pv, index_p, index_v, device):
+    def structure_aggregator(self, c_initial, sequence_output_pv, index_p, index_v, device):
         ''' Compute 3 values:
             (1) initial entity embedding = pooled image embedding + pooled title embedding + pooled knowledge graph embedding
             (2) final entity embedding = initial entity embedding + attention-weighted triplets embeddings, aka Structure Aggregation Module
@@ -2372,8 +2410,6 @@ class BertForMultiModalPreTraining_tri_stru(BertPreTrainedModel):
         # We found using 1 attetion head has similar performance as using 8 heads, and it's more efficient.
         
         #--------  structure aggregate module ------------
-        c_initial = (pooled_output_v + pooled_output_t + pooled_output_pv)/3 #[batch_size,768]
-
         property_vecs = []
         value_vecs = []
         for i in range(sequence_output_pv.shape[0]):# item
@@ -2444,7 +2480,7 @@ class BertForMultiModalPreTraining_tri_stru(BertPreTrainedModel):
         loss_struc = self.loss_lpm(positive_norms, negative_norms, struc_label)
         logger.debug(f"LPM loss: {loss_struc}")
 
-        return c_initial, c_final, loss_struc
+        return c_final, loss_struc
 
     def bert_tri(self,
                  input_txt,  # input_ids
@@ -2464,14 +2500,11 @@ class BertForMultiModalPreTraining_tri_stru(BertPreTrainedModel):
             attention_mask = torch.ones_like(input_txt)
         if token_type_ids is None:
             token_type_ids = torch.zeros_like(input_txt)
-
-        # add for PV
         if attention_mask_pv is None:
             attention_mask_pv = torch.ones_like(input_txt_pv)
         if token_type_ids_pv is None:
             token_type_ids_pv = torch.zeros_like(input_txt_pv)
-
-        if image_attention_mask is None:
+        if image_attention_mask is None and self.use_image:
             image_attention_mask = torch.ones(
                 input_imgs.size(0), input_imgs.size(1)
             ).type_as(input_txt)
@@ -2491,7 +2524,7 @@ class BertForMultiModalPreTraining_tri_stru(BertPreTrainedModel):
         # used in OpenAI GPT, we just need to prepare the broadcast dimension here.
         extended_attention_mask = attention_mask.unsqueeze(1).unsqueeze(2)
         extended_attention_mask_pv = attention_mask_pv.unsqueeze(1).unsqueeze(2)
-        extended_image_attention_mask = image_attention_mask.unsqueeze(1).unsqueeze(2)
+
 
         extended_attention_mask2 = attention_mask.unsqueeze(2)
         extended_attention_mask2_pv = attention_mask_pv.unsqueeze(2)
@@ -2517,28 +2550,32 @@ class BertForMultiModalPreTraining_tri_stru(BertPreTrainedModel):
             dtype=next(self.parameters()).dtype
         )  # fp16 compatibility
 
-        extended_image_attention_mask = extended_image_attention_mask.to(
-            dtype=next(self.parameters()).dtype
-        )  # fp16 compatibility
-        extended_image_attention_mask = (1.0 - extended_image_attention_mask) * -10000.0
-
-        if co_attention_mask is None:
-            co_attention_mask = torch.zeros(
-                input_txt.size(0), input_imgs.size(1), input_txt.size(1)
-            ).type_as(extended_image_attention_mask)
-
-        extended_co_attention_mask = co_attention_mask.unsqueeze(1)  # 属于图片
-
-        # extended_co_attention_mask = co_attention_mask.unsqueeze(-1)
-        extended_co_attention_mask = extended_co_attention_mask * 5.0
-        extended_co_attention_mask = extended_co_attention_mask.to(
-            dtype=next(self.parameters()).dtype
-        )  # fp16 compatibility
+        if self.use_image:
+            extended_image_attention_mask = image_attention_mask.unsqueeze(1).unsqueeze(2)
+            extended_image_attention_mask = extended_image_attention_mask.to(
+                dtype=next(self.parameters()).dtype
+            )  # fp16 compatibility
+            extended_image_attention_mask = (1.0 - extended_image_attention_mask) * -10000.0
+            if co_attention_mask is None:
+                co_attention_mask = torch.zeros(
+                    input_txt.size(0), input_imgs.size(1), input_txt.size(1)
+                ).type_as(extended_image_attention_mask)
+            extended_co_attention_mask = co_attention_mask.unsqueeze(1)  # 属于图片
+            # extended_co_attention_mask = co_attention_mask.unsqueeze(-1)
+            extended_co_attention_mask = extended_co_attention_mask * 5.0
+            extended_co_attention_mask = extended_co_attention_mask.to(
+                dtype=next(self.parameters()).dtype
+            )  # fp16 compatibility
+            v_embedding_output = self.v_embeddings(input_imgs, image_loc)
+        else:
+            extended_image_attention_mask = None
+            extended_co_attention_mask = None
+            v_embedding_output = None
 
         embedding_output = self.embeddings(input_txt, token_type_ids, task_ids)
         embedding_output_pv = self.embeddings(input_txt_pv, token_type_ids_pv, task_ids)
-        v_embedding_output = self.v_embeddings(input_imgs, image_loc)
-        (encoded_layers_t, encoded_layers_v, all_attention_mask), (
+
+        (encoded_layers_t_with_v, encoded_layers_v_with_t, all_attention_mask), (
             encoded_layers_pv_with_v, encoded_layers_v_with_pv, all_attention_mask_v_pv), (
             encoded_layers_t_with_pv, encoded_layers_pv_with_t, all_attention_mask_t_pv) = self.encoder(
             embedding_output,  # text
@@ -2556,54 +2593,59 @@ class BertForMultiModalPreTraining_tri_stru(BertPreTrainedModel):
             output_all_attention_masks=output_all_attention_masks,
         )
 
-        sequence_output_t = encoded_layers_t[-1]
-        sequence_output_v = encoded_layers_v[-1]
-        pooled_output_t = self.t_pooler(sequence_output_t)
-        pooled_output_v = self.v_pooler(sequence_output_v)
-
-        sequence_output_pv_with_v = encoded_layers_pv_with_v[-1]
-        sequence_output_v_with_pv = encoded_layers_v_with_pv[-1]
-        pooled_output_pv_with_v = self.t_pooler(sequence_output_pv_with_v)
-        pooled_output_v_with_pv = self.v_pooler(sequence_output_v_with_pv)
-
         sequence_output_t_with_pv = encoded_layers_t_with_pv[-1]
         sequence_output_pv_with_t = encoded_layers_pv_with_t[-1]
         pooled_output_t_with_pv = self.t_pooler(sequence_output_t_with_pv)
         pooled_output_pv_with_t = self.t_pooler(sequence_output_pv_with_t)
 
+        if self.use_image:
+            sequence_output_t_with_v = encoded_layers_t_with_v[-1]
+            pooled_output_t_with_v = self.t_pooler(sequence_output_t_with_v)
+            sequence_output_v_with_t = encoded_layers_v_with_t[-1]
+            pooled_output_v_with_t = self.v_pooler(sequence_output_v_with_t)
+            sequence_output_pv_with_v = encoded_layers_pv_with_v[-1]
+            sequence_output_v_with_pv = encoded_layers_v_with_pv[-1]
+            pooled_output_pv_with_v = self.t_pooler(sequence_output_pv_with_v)
+            pooled_output_v_with_pv = self.v_pooler(sequence_output_v_with_pv)
+        else:
+            pooled_output_t_with_v = None
+            pooled_output_v_with_t = None
+            pooled_output_pv_with_v = None
+            pooled_output_v_with_pv = None
+
         if not output_all_encoded_layers:
-            encoded_layers_t = encoded_layers_t[-1]
-            encoded_layers_v = encoded_layers_v[-1]
-
-            encoded_layers_pv_with_v = encoded_layers_pv_with_v[-1]
-            encoded_layers_v_with_pv = encoded_layers_v_with_pv[-1]
-
             encoded_layers_t_with_pv = encoded_layers_t_with_pv[-1]
             encoded_layers_pv_with_t = encoded_layers_pv_with_t[-1]
+            if self.use_image:
+                encoded_layers_t_with_v = encoded_layers_t_with_v[-1]
+                encoded_layers_v_with_t = encoded_layers_v_with_t[-1]
+                encoded_layers_pv_with_v = encoded_layers_pv_with_v[-1]
+                encoded_layers_v_with_pv = encoded_layers_v_with_pv[-1]
+            else:
+                encoded_layers_t_with_v = None
+                encoded_layers_v_with_t = None
+                encoded_layers_pv_with_v = None
+                encoded_layers_v_with_pv = None
 
         return (
-            (encoded_layers_t,
-             encoded_layers_v,
-             pooled_output_t,
-             pooled_output_v,
+            (encoded_layers_t_with_v,
+             encoded_layers_v_with_t,
+             pooled_output_t_with_v,
+             pooled_output_v_with_t,
              all_attention_mask),
             (encoded_layers_pv_with_v,
              encoded_layers_v_with_pv,
              pooled_output_pv_with_v,
              pooled_output_v_with_pv,
              all_attention_mask_v_pv),
-            (
-                encoded_layers_t_with_pv,
-                encoded_layers_pv_with_t,
-                pooled_output_t_with_pv,
-                pooled_output_pv_with_t,
-                all_attention_mask_t_pv
-            ),
-            (
-                embedding_output,
-                embedding_output_pv,
-                v_embedding_output,
-            )
+            (encoded_layers_t_with_pv,
+             encoded_layers_pv_with_t,
+             pooled_output_t_with_pv,
+             pooled_output_pv_with_t,
+             all_attention_mask_t_pv),
+            (embedding_output,
+             embedding_output_pv,
+             v_embedding_output)
         )
 
     def forward(
@@ -2630,7 +2672,7 @@ class BertForMultiModalPreTraining_tri_stru(BertPreTrainedModel):
             index_v=None,
             device=None
     ):
-        (sequence_output_t, sequence_output_v, pooled_output_t, pooled_output_v, all_attention_mask), (
+        (sequence_output_t_with_v, sequence_output_v_with_t, pooled_output_t_with_v, pooled_output_v_with_t, all_attention_mask_t_v), (
         sequence_output_pv_with_v, sequence_output_v_with_pv, pooled_output_pv_with_v, pooled_output_v_with_pv,
         all_attention_mask_v_pv), (
         sequence_output_t_with_pv, sequence_output_pv_with_t, pooled_output_t_with_pv, pooled_output_pv_with_t,
@@ -2649,15 +2691,17 @@ class BertForMultiModalPreTraining_tri_stru(BertPreTrainedModel):
         )
 
         sequence_output_v, sequence_output_t, sequence_output_pv, pooled_output_v, pooled_output_t, pooled_output_pv = self.get_sequence_pooled_output_final(
-            sequence_output_t, sequence_output_v,
-            all_attention_mask,
+            sequence_output_t_with_v, sequence_output_v_with_t,
             sequence_output_pv_with_v, sequence_output_v_with_pv,
-            all_attention_mask_v_pv,
             sequence_output_t_with_pv, sequence_output_pv_with_t,
-            all_attention_mask_t_pv,
             individual_txt, individual_pv, individual_v)
-        
-        c_initial, c_final, loss_struc = self.structure_aggregator(pooled_output_v, pooled_output_t, pooled_output_pv, sequence_output_pv, index_p, index_v, device)
+
+        # initial item embedding
+        if pooled_output_v is not None:
+            c_initial = (pooled_output_v + pooled_output_t + pooled_output_pv) / 3 #[batch_size,768]
+        else:
+            c_initial = (pooled_output_t + pooled_output_pv) / 2
+        c_final, loss_struc = self.structure_aggregator(c_initial, sequence_output_pv, index_p, index_v, device)
         
         if True:  
             prediction_scores_t, prediction_scores_v, prediction_scores_pv, seq_relationship_score, seq_relationship_score_t_pv, \
@@ -2674,91 +2718,94 @@ class BertForMultiModalPreTraining_tri_stru(BertPreTrainedModel):
                 masked_lm_labels is not None
                 and next_sentence_label is not None
                 and image_target is not None
-        ):  
-            prediction_scores_v = prediction_scores_v[:, 1:]
-            if self.visual_target == 1:
-                img_loss = self.vis_criterion(prediction_scores_v, image_target)
-                masked_img_loss = torch.sum(
-                    img_loss * (image_label == 1).unsqueeze(2).float()
-                ) / max(
-                    torch.sum((image_label == 1).unsqueeze(2).expand_as(img_loss)), 1
-                )
-            elif self.visual_target == 0:
-                img_loss = self.vis_criterion(
-                    F.log_softmax(prediction_scores_v, dim=2), image_target
-                )
-
-                masked_img_loss = torch.sum(
-                    img_loss * (image_label == 1).unsqueeze(2).float()
-                ) / max(torch.sum((image_label == 1)), 0)
-            elif self.visual_target == 2:
-                # generate negative sampled index.
-                num_negative = self.num_negative_image
-                num_across_batch = int(self.num_negative * 0.7)
-                num_inside_batch = int(self.num_negative * 0.3)
-
-                batch_size, num_regions, _ = prediction_scores_v.size()
-                assert batch_size != 0
-                # random negative across batches.
-                row_across_index = input_ids.new(
-                    batch_size, num_regions, num_across_batch
-                ).random_(0, batch_size - 1)
-                col_across_index = input_ids.new(
-                    batch_size, num_regions, num_across_batch
-                ).random_(0, num_regions)
-
-                for i in range(batch_size - 1):
-                    row_across_index[i][row_across_index[i] == i] = batch_size - 1
-                final_across_index = row_across_index * num_regions + col_across_index
-
-                # random negative inside batches.
-                row_inside_index = input_ids.new(
-                    batch_size, num_regions, num_inside_batch
-                ).zero_()
-                col_inside_index = input_ids.new(
-                    batch_size, num_regions, num_inside_batch
-                ).random_(0, num_regions - 1)
-
-                for i in range(batch_size):
-                    row_inside_index[i] = i
-                for i in range(num_regions - 1):
-                    col_inside_index[:, i, :][col_inside_index[:, i, :] == i] = (
-                            num_regions - 1
+        ):
+            if self.use_image:
+                prediction_scores_v = prediction_scores_v[:, 1:]
+                if self.visual_target == 1:
+                    img_loss = self.vis_criterion(prediction_scores_v, image_target)
+                    masked_img_loss = torch.sum(
+                        img_loss * (image_label == 1).unsqueeze(2).float()
+                    ) / max(
+                        torch.sum((image_label == 1).unsqueeze(2).expand_as(img_loss)), 1
                     )
-                final_inside_index = row_inside_index * num_regions + col_inside_index
+                elif self.visual_target == 0:
+                    img_loss = self.vis_criterion(
+                        F.log_softmax(prediction_scores_v, dim=2), image_target
+                    )
 
-                final_index = torch.cat((final_across_index, final_inside_index), dim=2)
+                    masked_img_loss = torch.sum(
+                        img_loss * (image_label == 1).unsqueeze(2).float()
+                    ) / max(torch.sum((image_label == 1)), 0)
+                elif self.visual_target == 2:
+                    # generate negative sampled index.
+                    num_negative = self.num_negative_image
+                    num_across_batch = int(self.num_negative * 0.7)
+                    num_inside_batch = int(self.num_negative * 0.3)
 
-                # Let's first sample where we need to compute.
-                predict_v = prediction_scores_v[image_label == 1]
-                neg_index_v = final_index[image_label == 1]
+                    batch_size, num_regions, _ = prediction_scores_v.size()
+                    assert batch_size != 0
+                    # random negative across batches.
+                    row_across_index = input_ids.new(
+                        batch_size, num_regions, num_across_batch
+                    ).random_(0, batch_size - 1)
+                    col_across_index = input_ids.new(
+                        batch_size, num_regions, num_across_batch
+                    ).random_(0, num_regions)
 
-                flat_image_target = image_target.view(batch_size * num_regions, -1)
-                # we also need to append the target feature at the begining.
-                negative_v = flat_image_target[neg_index_v]
-                positive_v = image_target[image_label == 1]
-                sample_v = torch.cat((positive_v.unsqueeze(1), negative_v), dim=1)
+                    for i in range(batch_size - 1):
+                        row_across_index[i][row_across_index[i] == i] = batch_size - 1
+                    final_across_index = row_across_index * num_regions + col_across_index
 
-                # calculate the loss.
-                score = torch.bmm(sample_v, predict_v.unsqueeze(2)).squeeze(2)
-                masked_img_loss = self.vis_criterion(
-                    score, input_ids.new(score.size(0)).zero_()
-                )
+                    # random negative inside batches.
+                    row_inside_index = input_ids.new(
+                        batch_size, num_regions, num_inside_batch
+                    ).zero_()
+                    col_inside_index = input_ids.new(
+                        batch_size, num_regions, num_inside_batch
+                    ).random_(0, num_regions - 1)
 
-            masked_lm_loss = self.loss_fct(
+                    for i in range(batch_size):
+                        row_inside_index[i] = i
+                    for i in range(num_regions - 1):
+                        col_inside_index[:, i, :][col_inside_index[:, i, :] == i] = (
+                                num_regions - 1
+                        )
+                    final_inside_index = row_inside_index * num_regions + col_inside_index
+
+                    final_index = torch.cat((final_across_index, final_inside_index), dim=2)
+
+                    # Let's first sample where we need to compute.
+                    predict_v = prediction_scores_v[image_label == 1]
+                    neg_index_v = final_index[image_label == 1]
+
+                    flat_image_target = image_target.view(batch_size * num_regions, -1)
+                    # we also need to append the target feature at the begining.
+                    negative_v = flat_image_target[neg_index_v]
+                    positive_v = image_target[image_label == 1]
+                    sample_v = torch.cat((positive_v.unsqueeze(1), negative_v), dim=1)
+
+                    # calculate the loss.
+                    score = torch.bmm(sample_v, predict_v.unsqueeze(2)).squeeze(2)
+                    masked_img_loss = self.vis_criterion(
+                        score, input_ids.new(score.size(0)).zero_()
+                    )
+            else:
+                masked_img_loss = torch.zeros(1, device=device)
+
+            masked_lm_loss = self.loss_mlm(
                 prediction_scores_t.view(-1, self.config.vocab_size),
                 masked_lm_labels.view(-1).to(device=device, dtype=torch.long, non_blocking=True)
             )
 
             if True:  # pv对的损失，和title的很像
-                masked_lm_loss_pv = self.loss_fct(
+                masked_lm_loss_pv = self.loss_mlm(
                     prediction_scores_pv.view(-1, self.config.vocab_size),
                     masked_lm_labels_pv.view(-1).to(device=device, dtype=torch.long, non_blocking=True)
                 )
 
                 next_sentence_label_pv_t_v = 1 - 1 * (
                         (next_sentence_label + next_sentence_label_pv_v + next_sentence_label_pv_t) == 0)
-                next_sentence_loss_t_v_pv = self.loss_fct(seq_relationship_score_t_v_pv.view(-1, 2),
+                next_sentence_loss_t_v_pv = self.loss_mlm(seq_relationship_score_t_v_pv.view(-1, 2),
                                                           next_sentence_label_pv_t_v.view(-1).to(device=device, dtype=torch.long, non_blocking=True)
                 )
 
@@ -2796,7 +2843,7 @@ class K3MForItemAlignment(BertPreTrainedModel):
 
     def __init__(self, config):
         super(K3MForItemAlignment, self).__init__(config)
-
+        self.use_image = config.use_image
         # Bert Model Tri
         if config.model == "bert":
             self.embeddings = BertEmbeddings(config)

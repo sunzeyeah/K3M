@@ -798,7 +798,7 @@ def train_single(args, config, device):
     # 创建data loader
     train_dataset = ConceptCapLoaderTrain_struc(
         args.data_dir,
-        args.file_name.format("train+valid"),
+        args.file_name.format("train"),
         tokenizer,
         max_seq_len=args.max_seq_length,
         max_seq_len_pv=args.max_seq_length_pv,
@@ -1269,7 +1269,6 @@ def get_parser():
     parser.add_argument("--model_name", default="bert-base-uncased", type=str, help="Bert pre-trained model selected in the list: bert-base-uncased, "
              "bert-large-uncased, roberta-base",)
 
-    ## Other parameters
     # data, model & config
     parser.add_argument("--pretrained_model_path", default=None, type=str, help="Bert pre-trained model selected in the list: bert-base-uncased, "
              "bert-base-uncased, roberta-base, roberta-large, ")
@@ -1280,6 +1279,7 @@ def get_parser():
     parser.add_argument("--log_steps", default=1, type=int, help="log model training process every n steps")
     parser.add_argument("--cache", default=5000,  type=int, help="whether use chunck for parallel training.")
     # training
+    parser.add_argument("--use_image", action="store_true", help="是否融合图像模态")
     parser.add_argument("--do_eval", action="store_true", help="是否进行模型验证")
     parser.add_argument("--seed", default=42, type=int, help="random seed for initialization")
     parser.add_argument("--no_cuda", action="store_true", help="Whether not to use CUDA when available")
@@ -1359,6 +1359,7 @@ def main():
         config.model = "roberta"
     if args.freeze > config.t_biattention_id[0]:
         config.fixed_t_layer = config.t_biattention_id[0]
+    config.use_image = args.use_image
     config.with_coattention = args.with_coattention
     config.dynamic_attention = args.dynamic_attention
     config.if_pre_sampling = args.if_pre_sampling
