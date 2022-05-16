@@ -403,6 +403,95 @@ class Conceptual_Caption(td.RNGDataFlow):
             yield line
 
 
+class ConceptCapLoader(td.RNGDataFlow):
+    """
+    Data loader. Combines a dataset and a sampler, and provides
+    single- or multi-process iterators over the dataset.
+    Arguments:
+        mode (str, required): mode of dataset to operate in, one of ['train', 'val']
+        batch_size (int, optional): how many samples per batch to load
+            (default: 1).
+        shuffle (bool, optional): set to ``True`` to have the data reshuffled
+            at every epoch (default: False).
+        num_workers (int, optional): how many subprocesses to use for data
+            loading. 0 means that the data will be loaded in the main process
+            (default: 0)
+        cache (int, optional): cache size to use when loading data,
+        drop_last (bool, optional): set to ``True`` to drop the last incomplete batch,
+            if the dataset size is not divisible by the batch size. If ``False`` and
+            the size of dataset is not divisible by the batch size, then the last batch
+            will be smaller. (default: False)
+        cuda (bool, optional): set to ``True`` and the PyTorch tensors will get preloaded
+            to the GPU for you (necessary because this lets us to uint8 conversion on the
+            GPU, which is faster).
+    """
+    def __init__(
+            self,
+            serialized_file_name,
+            pair_file_name,
+            serializer=td.LMDBSerializer,
+    ):
+        logger.debug(f"Loading from {serialized_file_name}")
+
+        if serializer == td.NumpySerializer:
+            buffer = np.load(serialized_file_name, allow_pickle=True)['buffer']
+            ds = td.DataFromList(buffer, shuffle=False)
+        elif serializer == td.LMDBSerializer:
+            ds = serializer.load(serialized_file_name, shuffle=True)
+        else:
+            ds = serializer.load(serialized_file_name)
+        self.num_dataset = len(ds)
+        self.ds = dict()
+        for batch in ds:
+            item_id, caption, pv, category, image_h, image_w, num_boxes, image_location_wp, image_feature_wp, \
+            image_target_wp = (
+                batch
+            )
+            self.ds[item_id] = batch
+
+        # preprocess_function = BertPreprocessBatch(tokenizer, max_seq_len=max_seq_len, max_seq_len_pv=max_seq_len_pv, max_num_pv=max_num_pv,
+        #                                           max_region_len=max_region_len, visual_target=visual_target,
+        #                                           v_target_size=v_target_size, v_feature_size=v_feature_size,
+        #                                           v_loc_size=v_loc_size, objective=objective, visualization=visualization)
+        #
+        # ds = td.MapData(ds, preprocess_function)
+        # if not sys.platform.startswith("win"):
+        #     ds = td.PrefetchDataZMQ(ds, num_workers)
+        # self.ds = td.BatchData(ds, batch_size)
+        # self.ds.reset_state()
+        #
+        # self.batch_size = batch_size
+        # self.num_workers = num_workers
+
+        self.pairs = []
+        with open(pair_file_name, "r", encoding="utf-8") as pair_file:
+            while True:
+                line = pair_file.readline()
+                if not line:
+                    break
+                self.pairs.append(json.loads(line.strip()))
+
+    def __iter__(self):
+
+        for pair in self.pairs:
+            src_item_id = pair['src_item_id']
+            tgt_item_id = pair['tgt_item_id']
+            item_label = pair['item_label']
+
+            item_id_1, caption_1, pv_1, category_1, image_h_1, image_w_1, num_boxes_1, image_location_wp_1, image_feature_wp_1, \
+            image_target_wp_1 = self.ds[src_item_id]
+
+            item_id_2, caption_2, pv_2, category_2, image_h_2, image_w_2, num_boxes_2, image_location_wp_2, image_feature_wp_2, \
+            image_target_wp_2 = self.ds[tgt_item_id]
+
+            yield tuple([item_label, item_id_1, caption_1, pv_1, category_1, image_h_1, image_w_1, num_boxes_1, image_location_wp_1, image_feature_wp_1, \
+                         image_target_wp_1, item_id_2, caption_2, pv_2, category_2, image_h_2, image_w_2, num_boxes_2, image_location_wp_2, image_feature_wp_2, \
+                         image_target_wp_2])
+
+    def __len__(self):
+        return len(self.pairs)
+
+
 def serialize(args, dtype):
     predictor = get_predictor(args)
     ds = Conceptual_Caption(args, dtype, predictor)
@@ -426,6 +515,35 @@ def serialize(args, dtype):
         # traceback.print_exc()
 
 
+def pair_serialize(args, dtype):
+    # pair_file_name = os.path.join(args.data_dir, f"item_train_{dtype}_pair_small.jsonl")
+    pair_file_name = os.path.join(args.data_dir, f"item_train_{dtype}_pair.jsonl")
+    if sys.platform.startswith("win"):
+        # out_file = os.path.join(args.output_dir, f"{dtype}_item_alignment_small.npz")
+        # serialized_file_name = os.path.join(args.output_dir, f"train_feat_small.npz")
+        out_file = os.path.join(args.output_dir, f"train_{dtype}_item_alignment.npz")
+        serialized_file_name = os.path.join(args.output_dir, f"train+valid_feat.npz")
+        serializer = td.NumpySerializer
+    else:
+        # out_file = os.path.join(args.output_dir, f"{dtype}_item_alignment_small.lmdb")
+        # serialized_file_name = os.path.join(args.output_dir, f"train_feat_small.lmdb")
+        out_file = os.path.join(args.output_dir, f"train_{dtype}_item_alignment.lmdb")
+        serialized_file_name = os.path.join(args.output_dir, f"train+valid_feat.lmdb")
+        serializer = td.LMDBSerializer
+
+    ds = ConceptCapLoader(serialized_file_name, pair_file_name, serializer)
+
+    if os.path.isfile(out_file):
+        os.remove(out_file)
+
+    logger.info(f"{dtype} data length: {len(ds)}")
+    try:
+        serializer.save(ds, out_file)
+    except Exception as e:
+        logger.error("[Error] pair serialization", e)
+        traceback.print_exc()
+
+
 def main():
     args = get_parser()
 
@@ -446,9 +564,13 @@ def main():
     # logger.info("[Step 3] Finished extracting image features")
 
     # step 4: 抽取图像特征，和其余模态混合，序列化存储
-    for dtype in ["train+valid"]:
-        serialize(args, dtype)
-    logger.info("Finished serializing files")
+    # for dtype in ["train+valid"]:
+    #     serialize(args, dtype)
+    # logger.info("Finished serializing files")
+
+    for dtype in ["train", "valid"]:
+        pair_serialize(args, dtype)
+    logger.info("Finished pair serializing files")
 
 
 if __name__ == '__main__':
