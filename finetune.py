@@ -460,7 +460,10 @@ def worker(rank, args, config, world_size):
                     loss = loss / args.gradient_accumulation_steps
 
             if (step + 1) % args.log_steps == 0:
-                value_loss = int(loss.cpu().detach().numpy()[rank] * 1000) / 1000
+                try:
+                    value_loss = int(loss.cpu().detach().numpy() * 1000) / 1000
+                except Exception:
+                    value_loss = loss.cpu().detach().numpy()
                 logger.info(f"[Rank-{rank} Epoch-{epoch} Step-{step}] loss: {value_loss}")
 
             # 梯度回传
@@ -919,7 +922,10 @@ def train_single(args, config, device):
                     device=device
                 )
 
-            value_loss = int(loss.cpu().detach().numpy() * 1000) / 1000
+            try:
+                value_loss = int(loss.cpu().detach().numpy() * 1000) / 1000
+            except Exception:
+                value_loss = loss.cpu().detach().numpy()
 
             if (step + 1) % args.log_steps == 0:
                 logger.info(f"[Epoch-{epoch} Step-{step}] loss: {value_loss}")
@@ -1067,15 +1073,15 @@ def train_single(args, config, device):
                     model_probs = probs
                     model_labels = labels
                 else:
-                    model_probs = np.concatenate(model_probs, probs)
-                    model_labels = np.concatenate(model_labels, labels)
+                    model_probs = np.append(model_probs, probs)
+                    model_labels = np.append(model_labels, labels)
 
             # calculate precision, recall and f1
             for threshold in np.arange(0.1, 1.0, 0.1):
                 p = precision_score(model_labels, model_probs >= threshold)
                 r = recall_score(model_labels, model_probs >= threshold)
                 f1 = f1_score(model_labels, model_probs >= threshold)
-                logger.info(f"[Evaluation] threshold={threshold}, precision={p}, recall={r}, f1={f1}")
+                logger.info(f"[Epoch-{epoch}] threshold={threshold}, precision={p}, recall={r}, f1={f1}")
 
             torch.set_grad_enabled(True)
 
