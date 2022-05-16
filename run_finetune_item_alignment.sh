@@ -30,6 +30,7 @@ python $MAIN \
   --config_file "k3m_roberta_base.json" \
   --pretrained_model_path $PRETRAINED_BERT_PATH \
   --file_state_dict $PRETRAINED_MODEL_PATH \
+  --do_eval \
   --if_pre_sampling 1 \
   --with_coattention \
   --visual_target 0 \
