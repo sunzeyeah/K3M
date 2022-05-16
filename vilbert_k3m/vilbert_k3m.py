@@ -16,7 +16,7 @@ from io import open
 
 import torch
 from torch import nn
-from torch.nn import CrossEntropyLoss, MarginRankingLoss
+from torch.nn import CrossEntropyLoss, MarginRankingLoss, BCEWithLogitsLoss
 import torch.nn.functional as F
 # from torch.nn.utils.weight_norm import weight_norm
 
@@ -2207,7 +2207,7 @@ class BertForMultiModalPreTraining_tri_stru(BertPreTrainedModel):
         self.struc_w1 = nn.Linear(config.hidden_size * 3, config.hidden_size)#.to(devices[3])
         self.struc_w2 = nn.Linear(config.hidden_size, 1)#.to(devices[3])
         self.struc_w3 = nn.Linear(config.hidden_size, config.hidden_size)#.to(devices[3])
-        self.struc_w_loss = nn.Linear(config.hidden_size, 2)#.to(devices[3])
+        # self.struc_w_loss = nn.Linear(config.hidden_size, 2)#.to(devices[3])
         # self.loss_fct_struc = CrossEntropyLoss(ignore_index=-1)
         self.loss_lpm = MarginRankingLoss(margin=config.margin)
 
@@ -2437,7 +2437,6 @@ class BertForMultiModalPreTraining_tri_stru(BertPreTrainedModel):
                         negative_norm = torch.norm(final_entity_vec + property_vec - negative_value_vec)
                         positive_norms = torch.cat((positive_norms, positive_norm.unsqueeze(0)))
                         negative_norms = torch.cat((negative_norms, negative_norm.unsqueeze(0)))
-
 
         # struc_label = torch.tensor([1]*sequence_output_pv.shape[0]+[0]*sequence_output_pv.shape[0], device=device)
         # logits = self.struc_w_loss(torch.cat((c_final, c_final_neg), dim=0))
@@ -2789,3 +2788,580 @@ class BertForMultiModalPreTraining_tri_stru(BertPreTrainedModel):
                 seq_relationship_score,
                 all_attention_mask,
             )
+
+
+class K3MForItemAlignment(BertPreTrainedModel):
+    """K3M model finetune for item alignment
+    """
+
+    def __init__(self, config):
+        super(K3MForItemAlignment, self).__init__(config)
+
+        # Bert Model Tri
+        if config.model == "bert":
+            self.embeddings = BertEmbeddings(config)
+        elif config.model == "roberta":
+            self.embeddings = RobertaEmbeddings(config)
+        self.task_specific_tokens = config.task_specific_tokens
+        self.v_embeddings = BertImageEmbeddings(config)
+        self.encoder = BertEncoder(config)
+        self.t_pooler = BertTextPooler(config)
+        self.v_pooler = BertImagePooler(config)
+
+        # Bert Head Tri
+        # self.cls = BertPreTrainingHeads(config, self.embeddings.word_embeddings.weight)
+
+        self.if_pre_sampling = config.if_pre_sampling
+        # if self.if_pre_sampling == 0:
+        #     logger.info('fusion strategy 0, individual + interactive -- mean')
+        # elif self.if_pre_sampling == 1:
+        #     logger.info('fusion strategy 1, individual + interactive -- hard')
+        # elif self.if_pre_sampling == 2:
+        #     logger.info('fusion strategy 2, individual + interactive -- soft')
+        # elif self.if_pre_sampling == 3:
+        #     logger.info('fusion strategy 3, interactive')
+        # else:
+        #     pass
+
+        self.map_individual_to_bi = nn.Linear(config.hidden_size, config.bi_hidden_size)
+        self.map_bi_to_individual = nn.Linear(config.bi_hidden_size, config.hidden_size)
+
+        # image scores
+        self.score_self_v = nn.Linear(config.bi_hidden_size * 3, config.bi_hidden_size)#.to(devices[0])
+        self.score_cross1_v = nn.Linear(config.bi_hidden_size * 3, config.bi_hidden_size)#.to(devices[0])
+        self.score_cross2_v = nn.Linear(config.bi_hidden_size * 3, config.bi_hidden_size)#.to(devices[0])
+        self.soft_v = nn.Linear(config.bi_hidden_size * 3, config.bi_hidden_size)#.to(devices[0])
+        # title scores
+        self.score_self_t = nn.Linear(config.hidden_size * 3, config.hidden_size)#.to(devices[1])
+        self.score_cross1_t = nn.Linear(config.hidden_size * 3, config.hidden_size)#.to(devices[1])
+        self.score_cross2_t = nn.Linear(config.hidden_size * 3, config.hidden_size)#.to(devices[1])
+        self.soft_t = nn.Linear(config.hidden_size * 3, config.hidden_size)#.to(devices[1])
+        # pv scores
+        self.score_self_pv = nn.Linear(config.hidden_size * 3, config.hidden_size)#.to(devices[2])
+        self.score_cross1_pv = nn.Linear(config.hidden_size * 3, config.hidden_size)#.to(devices[2])
+        self.score_cross2_pv = nn.Linear(config.hidden_size * 3, config.hidden_size)#.to(devices[2])
+        self.soft_pv = nn.Linear(config.hidden_size * 3, config.hidden_size)#.to(devices[2])
+
+        self.apply(self.init_weights)
+        # self.visual_target = config.visual_target
+        # self.num_negative_image = config.num_negative_image
+        # self.num_negative_pv = config.num_negative_pv
+        self.loss_fct = BCEWithLogitsLoss()
+        # structure aggregation module
+        self.struc_w1 = nn.Linear(config.hidden_size * 3, config.hidden_size)#.to(devices[3])
+        self.struc_w2 = nn.Linear(config.hidden_size, 1)#.to(devices[3])
+        self.struc_w3 = nn.Linear(config.hidden_size, config.hidden_size)#.to(devices[3])
+        # self.struc_w_loss = nn.Linear(config.hidden_size, 2)#.to(devices[3])
+        # self.loss_fct_struc = CrossEntropyLoss(ignore_index=-1)
+        # self.loss_lpm = MarginRankingLoss(margin=config.margin)
+
+        # if self.visual_target == 0:
+        #     self.vis_criterion = nn.KLDivLoss(reduction="none")
+        # elif self.visual_target == 1:
+        #     self.vis_criterion = nn.MSELoss(reduction="none")
+        # elif self.visual_target == 2:
+        #     self.vis_criterion = CrossEntropyLoss()
+
+        # self.tie_weights()
+
+    # def tie_weights(self):
+    #     """ Make sure we are sharing the input and output embeddings.
+    #         Export to TorchScript can't handle parameter sharing so we are cloning them instead.
+    #     """
+    #     self._tie_or_clone_weights(
+    #         self.cls.predictions.decoder, self.embeddings.word_embeddings
+    #     )
+
+    def pre_sampling(self, individual_pooled=None, pooled_output_c1=None, pooled_output_c2=None,
+                     modality=None):  # modality = v,t,pv
+
+        individual_pooled = F.relu(individual_pooled)
+        pooled_output_c1 = F.relu(pooled_output_c1)
+        pooled_output_c2 = F.relu(pooled_output_c2)
+        feature_list = (individual_pooled, pooled_output_c1, pooled_output_c2)
+        if modality == 'v':
+            alpha_s = torch.unsqueeze(F.sigmoid(self.score_self_v(torch.cat(feature_list, 1))), dim=1)
+            alpha_c1 = torch.unsqueeze(F.sigmoid(self.score_cross1_v(torch.cat(feature_list, 1))), dim=1)
+            alpha_c2 = torch.unsqueeze(F.sigmoid(self.score_cross2_v(torch.cat(feature_list, 1))), dim=1)
+        elif modality == 't':
+            alpha_s = torch.unsqueeze(F.sigmoid(self.score_self_t(torch.cat(feature_list, 1))), dim=1)
+            alpha_c1 = torch.unsqueeze(F.sigmoid(self.score_cross1_t(torch.cat(feature_list, 1))), dim=1)
+            alpha_c2 = torch.unsqueeze(F.sigmoid(self.score_cross2_t(torch.cat(feature_list, 1))), dim=1)
+        elif modality == 'pv':
+            alpha_s = torch.unsqueeze(F.sigmoid(self.score_self_pv(torch.cat(feature_list, 1))), dim=1)
+            alpha_c1 = torch.unsqueeze(F.sigmoid(self.score_cross1_pv(torch.cat(feature_list, 1))), dim=1)
+            alpha_c2 = torch.unsqueeze(F.sigmoid(self.score_cross2_pv(torch.cat(feature_list, 1))), dim=1)
+
+        ak = torch.cat((alpha_s, alpha_c1, alpha_c2), 1)
+        a_index = F.gumbel_softmax(ak, hard=True, dim=1)
+        pooled_output = individual_pooled * (a_index[:, 0, :].squeeze(dim=1)) + pooled_output_c1 * (
+            a_index[:, 1, :].squeeze(dim=1)) + pooled_output_c2 * (a_index[:, 2, :].squeeze(dim=1))
+        return pooled_output
+
+    def pre_sampling_sequence_soft(self, individual_sequence=None, sequence_c1=None, sequence_c2=None,
+                                   modality=None):  # modality = v,t,pv
+        individual_sequence = F.relu(individual_sequence)
+        sequence_c1 = F.relu(sequence_c1)
+        sequence_c2 = F.relu(sequence_c2)  # 16,36,1024
+        feature_list = (individual_sequence, sequence_c1, sequence_c2)
+        if modality == 'v':
+            alpha_s = F.sigmoid(self.score_self_v(torch.cat(feature_list, 2)))
+            alpha_c1 = F.sigmoid(self.score_cross1_v(torch.cat(feature_list, 2)))
+            alpha_c2 = F.sigmoid(self.score_cross2_v(torch.cat(feature_list, 2)))
+            # print(alpha_s.size())
+            # print(individual_sequence.size())
+            sequence_output = self.soft_v(
+                torch.cat((individual_sequence * alpha_s, sequence_c1 * alpha_c1, sequence_c2 * alpha_c2), 2))
+
+        elif modality == 't':
+            alpha_s = F.sigmoid(self.score_self_t(torch.cat(feature_list, 2)))
+            alpha_c1 = F.sigmoid(self.score_cross1_t(torch.cat(feature_list, 2)))
+            alpha_c2 = F.sigmoid(self.score_cross2_t(torch.cat(feature_list, 2)))
+            sequence_output = self.soft_t(
+                torch.cat((individual_sequence * alpha_s, sequence_c1 * alpha_c1, sequence_c2 * alpha_c2), 2))
+
+        elif modality == 'pv':
+            alpha_s = F.sigmoid(self.score_self_pv(torch.cat(feature_list, 2)))
+            alpha_c1 = F.sigmoid(self.score_cross1_pv(torch.cat(feature_list, 2)))
+            alpha_c2 = F.sigmoid(self.score_cross2_pv(torch.cat(feature_list, 2)))
+            sequence_output = self.soft_pv(
+                torch.cat((individual_sequence * alpha_s, sequence_c1 * alpha_c1, sequence_c2 * alpha_c2), 2))
+
+        return sequence_output
+
+    def pre_sampling_sequence(self, individual_sequence=None, sequence_c1=None, sequence_c2=None,
+                              modality=None):  # modality = v,t,pv
+        individual_sequence = F.relu(individual_sequence)
+        sequence_c1 = F.relu(sequence_c1)
+        sequence_c2 = F.relu(sequence_c2)  # 16,36,1024
+        feature_list = (individual_sequence, sequence_c1, sequence_c2)
+        if modality == 'v':
+            alpha_s = torch.unsqueeze(F.sigmoid(self.score_self_v(torch.cat(feature_list, 2))), dim=2)
+            alpha_c1 = torch.unsqueeze(F.sigmoid(self.score_cross1_v(torch.cat(feature_list, 2))), dim=2)
+            alpha_c2 = torch.unsqueeze(F.sigmoid(self.score_cross2_v(torch.cat(feature_list, 2))), dim=2)
+        elif modality == 't':
+            alpha_s = torch.unsqueeze(F.sigmoid(self.score_self_t(torch.cat(feature_list, 2))), dim=2)
+            alpha_c1 = torch.unsqueeze(F.sigmoid(self.score_cross1_t(torch.cat(feature_list, 2))), dim=2)
+            alpha_c2 = torch.unsqueeze(F.sigmoid(self.score_cross2_t(torch.cat(feature_list, 2))), dim=2)
+        elif modality == 'pv':
+            alpha_s = torch.unsqueeze(F.sigmoid(self.score_self_pv(torch.cat(feature_list, 2))), dim=2)
+            alpha_c1 = torch.unsqueeze(F.sigmoid(self.score_cross1_pv(torch.cat(feature_list, 2))), dim=2)
+            alpha_c2 = torch.unsqueeze(F.sigmoid(self.score_cross2_pv(torch.cat(feature_list, 2))), dim=2)
+
+        ak = torch.cat((alpha_s, alpha_c1, alpha_c2), 2)  #
+        a_index = F.gumbel_softmax(ak, hard=True, dim=2)  #
+        sequence_output = individual_sequence * (a_index[:, :, 0, :].squeeze(dim=2)) + sequence_c1 * (
+            a_index[:, :, 1, :].squeeze(dim=2)) + sequence_c2 * (a_index[:, :, 2, :].squeeze(dim=2))
+        return sequence_output
+
+    def get_sequence_pooled_output_final(self,
+                                         sequence_output_t, sequence_output_v,
+                                         all_attention_mask,
+                                         sequence_output_pv_with_v, sequence_output_v_with_pv,
+                                         all_attention_mask_v_pv,
+                                         sequence_output_t_with_pv, sequence_output_pv_with_t,
+                                         all_attention_mask_t_pv,
+                                         individual_txt, individual_pv, individual_v):
+        if self.if_pre_sampling == 1:  # hard
+            sequence_output_v = self.pre_sampling_sequence(individual_v, sequence_output_v, sequence_output_v_with_pv,
+                                                           modality='v')  # 1024
+            sequence_output_t = self.pre_sampling_sequence(individual_txt, sequence_output_t, sequence_output_t_with_pv,
+                                                           modality='t')  # 768
+            sequence_output_pv = self.pre_sampling_sequence(individual_pv, sequence_output_pv_with_v,
+                                                            sequence_output_pv_with_t, modality='pv')  # 768
+
+        elif self.if_pre_sampling == 0:  # mean
+            sequence_output_v = (individual_v + sequence_output_v + sequence_output_v_with_pv) / 3
+            sequence_output_t = (individual_txt + sequence_output_t + sequence_output_t_with_pv) / 3
+            sequence_output_pv = (individual_pv + sequence_output_pv_with_v + sequence_output_pv_with_t) / 3
+
+        elif self.if_pre_sampling == 2:  # soft
+            sequence_output_v = self.pre_sampling_sequence_soft(individual_v, sequence_output_v,
+                                                                sequence_output_v_with_pv, modality='v')  # 1024
+            sequence_output_t = self.pre_sampling_sequence_soft(individual_txt, sequence_output_t,
+                                                                sequence_output_t_with_pv, modality='t')  # 768
+            sequence_output_pv = self.pre_sampling_sequence_soft(individual_pv, sequence_output_pv_with_v,
+                                                                 sequence_output_pv_with_t, modality='pv')  # 768
+
+        elif self.if_pre_sampling == 3:  # no fusoin
+            sequence_output_v = (sequence_output_v + sequence_output_v_with_pv) / 2
+            sequence_output_t = (sequence_output_t + sequence_output_t_with_pv) / 2
+            sequence_output_pv = (sequence_output_pv_with_v + sequence_output_pv_with_t) / 2
+
+        pooled_output_v = self.map_bi_to_individual(torch.mean(sequence_output_v[:, 1:, :], dim=1))  # 1024-768
+        pooled_output_t = torch.mean(sequence_output_t[:, 1:, :], dim=1)  # 768
+        pooled_output_pv = torch.mean(sequence_output_pv[:, 1:, :], dim=1)  # 768
+
+        return sequence_output_v, sequence_output_t, sequence_output_pv, pooled_output_v, pooled_output_t, pooled_output_pv
+
+    def structure_aggregator(self, pooled_output_v, pooled_output_t, pooled_output_pv, sequence_output_pv, index_p, index_v, device):
+        ''' Compute 3 values:
+            (1) initial entity embedding = pooled image embedding + pooled title embedding + pooled knowledge graph embedding
+            (2) final entity embedding = initial entity embedding + attention-weighted triplets embeddings, aka Structure Aggregation Module
+            (3) Link Prediction Modeling (LPM) loss
+
+        :param pooled_output_v: pooled image embedding
+        :param pooled_output_t: pooled text embedding
+        :param pooled_output_pv: pooled knowledge graph embedding
+        :param sequence_output_pv: sequence knowledge graph embeddings (for LPM loss)
+        :param index_p: index of knowledge graph sequence
+        :param index_v: index of image
+
+        :return:
+            c_initial: initial entity embedding
+            c_final: final entity embedding
+            loss_struct: LPM loss
+        '''
+        # the number of attention heads of structure aggregator in paper is 8, here is 1.
+        # We found using 1 attetion head has similar performance as using 8 heads, and it's more efficient.
+
+        #--------  structure aggregate module ------------
+        c_initial = (pooled_output_v + pooled_output_t + pooled_output_pv)/3 #[batch_size,768]
+
+        property_vecs = []
+        value_vecs = []
+        for i in range(sequence_output_pv.shape[0]):# item
+            property_vecs.append([])
+            value_vecs.append([])
+            for j in range(index_p.shape[1]):# p
+                if index_p[i, j, 0] == 0:
+                    break
+                p = torch.mean(sequence_output_pv[i, :, :].index_select(dim=0, index=index_p[i, j, ]), dim=0)##[768] , keepdim=True
+                v = torch.mean(sequence_output_pv[i, :, :].index_select(dim=0, index=index_v[i, j, :]), dim=0)
+                property_vecs[i].append(p)
+                value_vecs[i].append(v)
+                if j == 0:
+                    t = torch.unsqueeze(self.struc_w1(torch.cat((c_initial[i], p, v), dim=0)), 0)
+                else:
+                    t = torch.cat((t, torch.unsqueeze(self.struc_w1(torch.cat((c_initial[i], p, v), dim=0)), 0)), dim=0)
+
+            try:
+                b = self.struc_w2(F.leaky_relu(t))
+            except:
+                t = torch.unsqueeze(c_initial[i], 0)
+                b = self.struc_w2(F.leaky_relu(t))
+
+            # attention
+            atten = F.softmax(b, dim=0)
+
+            if i == 0:
+                c_final = torch.unsqueeze(c_initial[i] + self.struc_w3(torch.sum(atten*t, dim=0)), 0)
+                # c_final_neg = torch.unsqueeze(c_initial[i+1] + self.struc_w3(torch.sum(atten*t, dim=0)), 0)#错位构造负样本
+            else:
+                c_final = torch.cat((c_final, torch.unsqueeze(c_initial[i] + self.struc_w3(torch.sum(atten*t, dim=0)), 0)), dim=0)
+                # c_final_neg = torch.cat((
+                #     c_final_neg, torch.unsqueeze(c_initial[(i+1) % sequence_output_pv.shape[0]] + self.struc_w3(torch.sum(atten*t, dim=0)), 0)), dim=0)
+        #
+        # # 计算LPM loss
+        # positive_norms = torch.tensor([], device=device)
+        # negative_norms = torch.tensor([], device=device)
+        # for i in range(c_final.shape[0]):
+        #     final_entity_vec = c_final[i]
+        #     for j, (property_vec, value_vec) in enumerate(zip(property_vecs[i], value_vecs[i])):
+        #         # 负样本类型一：随机替换实体, <ec',  property, value>
+        #         num_negative_entities = self.num_negative_pv // 2
+        #         candidates = [k for k in range(c_final.shape[0]) if k != i]
+        #         if len(candidates) > 0:
+        #             positive_norm = torch.norm(final_entity_vec + property_vec - value_vec)
+        #             index_negative_entities = random.sample(candidates, min(len(candidates), num_negative_entities))
+        #             for k in index_negative_entities:
+        #                 negative_entity_vec = c_final[k]
+        #                 negative_norm = torch.norm(negative_entity_vec + property_vec - value_vec)
+        #                 positive_norms = torch.cat((positive_norms, positive_norm.unsqueeze(0)))
+        #                 negative_norms = torch.cat((negative_norms, negative_norm.unsqueeze(0)))
+        #
+        #         # 负样本类型二：随机替换值, <ec,  property, value'>
+        #         num_negative_values = self.num_negative_pv - num_negative_entities
+        #         candidates = [k for k in range(len(property_vecs[i])) if k != j]
+        #         if len(candidates) > 0:
+        #             positive_norm = torch.norm(final_entity_vec + property_vec - value_vec)
+        #             index_negative_values = random.sample(candidates, min(len(candidates), num_negative_values))
+        #             for k in index_negative_values:
+        #                 negative_value_vec = value_vecs[i][k]
+        #                 negative_norm = torch.norm(final_entity_vec + property_vec - negative_value_vec)
+        #                 positive_norms = torch.cat((positive_norms, positive_norm.unsqueeze(0)))
+        #                 negative_norms = torch.cat((negative_norms, negative_norm.unsqueeze(0)))
+        #
+        # # struc_label = torch.tensor([1]*sequence_output_pv.shape[0]+[0]*sequence_output_pv.shape[0], device=device)
+        # # logits = self.struc_w_loss(torch.cat((c_final, c_final_neg), dim=0))
+        # struc_label = torch.ones(positive_norms.shape[-1], device=device)
+        # loss_struc = self.loss_lpm(positive_norms, negative_norms, struc_label)
+        # logger.debug(f"LPM loss: {loss_struc}")
+
+        return c_initial, c_final #, loss_struc
+
+    def bert_tri(self,
+                 input_txt,  # input_ids
+                 input_imgs,  # image_feat
+                 image_loc,  #
+                 token_type_ids=None,
+                 attention_mask=None,
+                 image_attention_mask=None,
+                 input_txt_pv=None,
+                 token_type_ids_pv=None,
+                 attention_mask_pv=None,
+                 co_attention_mask=None,
+                 task_ids=None,
+                 output_all_encoded_layers=False,
+                 output_all_attention_masks=False,):
+        if attention_mask is None:
+            attention_mask = torch.ones_like(input_txt)
+        if token_type_ids is None:
+            token_type_ids = torch.zeros_like(input_txt)
+
+        # add for PV
+        if attention_mask_pv is None:
+            attention_mask_pv = torch.ones_like(input_txt_pv)
+        if token_type_ids_pv is None:
+            token_type_ids_pv = torch.zeros_like(input_txt_pv)
+
+        if image_attention_mask is None:
+            image_attention_mask = torch.ones(
+                input_imgs.size(0), input_imgs.size(1)
+            ).type_as(input_txt)
+
+        if self.task_specific_tokens:
+            # extend the mask
+            mask_tokens = input_txt.new().resize_(input_txt.size(0), 1).fill_(1)
+            attention_mask = torch.cat([mask_tokens, attention_mask], dim=1)
+            # add for PV
+            mask_tokens_pv = input_txt_pv.new().resize_(input_txt_pv.size(0), 1).fill_(1)
+            attention_mask_pv = torch.cat([mask_tokens_pv, attention_mask_pv], dim=1)
+
+        # We create a 3D attention mask from a 2D tensor mask.
+        # Sizes are [batch_size, 1, 1, to_seq_length]
+        # So we can broadcast to [batch_size, num_heads, from_seq_length, to_seq_length]
+        # this attention mask is more simple than the triangular masking of causal attention
+        # used in OpenAI GPT, we just need to prepare the broadcast dimension here.
+        extended_attention_mask = attention_mask.unsqueeze(1).unsqueeze(2)
+        extended_attention_mask_pv = attention_mask_pv.unsqueeze(1).unsqueeze(2)
+        extended_image_attention_mask = image_attention_mask.unsqueeze(1).unsqueeze(2)
+
+        extended_attention_mask2 = attention_mask.unsqueeze(2)
+        extended_attention_mask2_pv = attention_mask_pv.unsqueeze(2)
+        # Since attention_mask is 1.0 for positions we want to attend and 0.0 for
+        # masked positions, this operation will create a tensor which is 0.0 for
+        # positions we want to attend and -10000.0 for masked positions.
+        # Since we are adding it to the raw scores before the softmax, this is
+        # effectively the same as removing these entirely.
+        extended_attention_mask = extended_attention_mask.to(
+            dtype=next(self.parameters()).dtype
+        )  # fp16 compatibility
+        extended_attention_mask = (1.0 - extended_attention_mask) * -10000.0
+        extended_attention_mask2 = extended_attention_mask2.to(
+            dtype=next(self.parameters()).dtype
+        )  # fp16 compatibility
+
+        # add for PV
+        extended_attention_mask_pv = extended_attention_mask_pv.to(
+            dtype=next(self.parameters()).dtype
+        )  # fp16 compatibility
+        extended_attention_mask_pv = (1.0 - extended_attention_mask_pv) * -10000.0
+        extended_attention_mask2_pv = extended_attention_mask2_pv.to(
+            dtype=next(self.parameters()).dtype
+        )  # fp16 compatibility
+
+        extended_image_attention_mask = extended_image_attention_mask.to(
+            dtype=next(self.parameters()).dtype
+        )  # fp16 compatibility
+        extended_image_attention_mask = (1.0 - extended_image_attention_mask) * -10000.0
+
+        if co_attention_mask is None:
+            co_attention_mask = torch.zeros(
+                input_txt.size(0), input_imgs.size(1), input_txt.size(1)
+            ).type_as(extended_image_attention_mask)
+
+        extended_co_attention_mask = co_attention_mask.unsqueeze(1)  # 属于图片
+
+        # extended_co_attention_mask = co_attention_mask.unsqueeze(-1)
+        extended_co_attention_mask = extended_co_attention_mask * 5.0
+        extended_co_attention_mask = extended_co_attention_mask.to(
+            dtype=next(self.parameters()).dtype
+        )  # fp16 compatibility
+
+        embedding_output = self.embeddings(input_txt, token_type_ids, task_ids)
+        embedding_output_pv = self.embeddings(input_txt_pv, token_type_ids_pv, task_ids)
+        v_embedding_output = self.v_embeddings(input_imgs, image_loc)
+        (encoded_layers_t, encoded_layers_v, all_attention_mask), (
+            encoded_layers_pv_with_v, encoded_layers_v_with_pv, all_attention_mask_v_pv), (
+            encoded_layers_t_with_pv, encoded_layers_pv_with_t, all_attention_mask_t_pv) = self.encoder(
+            embedding_output,  # text
+            v_embedding_output,
+            extended_attention_mask,  # text
+            extended_attention_mask2,  # text
+            extended_image_attention_mask,
+            extended_co_attention_mask,
+
+            embedding_output_pv,
+            extended_attention_mask_pv,
+            extended_attention_mask2_pv,
+
+            output_all_encoded_layers=output_all_encoded_layers,
+            output_all_attention_masks=output_all_attention_masks,
+        )
+
+        sequence_output_t = encoded_layers_t[-1]
+        sequence_output_v = encoded_layers_v[-1]
+        pooled_output_t = self.t_pooler(sequence_output_t)
+        pooled_output_v = self.v_pooler(sequence_output_v)
+
+        sequence_output_pv_with_v = encoded_layers_pv_with_v[-1]
+        sequence_output_v_with_pv = encoded_layers_v_with_pv[-1]
+        pooled_output_pv_with_v = self.t_pooler(sequence_output_pv_with_v)
+        pooled_output_v_with_pv = self.v_pooler(sequence_output_v_with_pv)
+
+        sequence_output_t_with_pv = encoded_layers_t_with_pv[-1]
+        sequence_output_pv_with_t = encoded_layers_pv_with_t[-1]
+        pooled_output_t_with_pv = self.t_pooler(sequence_output_t_with_pv)
+        pooled_output_pv_with_t = self.t_pooler(sequence_output_pv_with_t)
+
+        if not output_all_encoded_layers:
+            encoded_layers_t = encoded_layers_t[-1]
+            encoded_layers_v = encoded_layers_v[-1]
+
+            encoded_layers_pv_with_v = encoded_layers_pv_with_v[-1]
+            encoded_layers_v_with_pv = encoded_layers_v_with_pv[-1]
+
+            encoded_layers_t_with_pv = encoded_layers_t_with_pv[-1]
+            encoded_layers_pv_with_t = encoded_layers_pv_with_t[-1]
+
+        return (
+            (encoded_layers_t,
+             encoded_layers_v,
+             pooled_output_t,
+             pooled_output_v,
+             all_attention_mask),
+            (encoded_layers_pv_with_v,
+             encoded_layers_v_with_pv,
+             pooled_output_pv_with_v,
+             pooled_output_v_with_pv,
+             all_attention_mask_v_pv),
+            (
+                encoded_layers_t_with_pv,
+                encoded_layers_pv_with_t,
+                pooled_output_t_with_pv,
+                pooled_output_pv_with_t,
+                all_attention_mask_t_pv
+            ),
+            (
+                embedding_output,
+                embedding_output_pv,
+                v_embedding_output,
+            )
+        )
+
+    def item_embedding(
+            self,
+            input_ids,
+            image_feat,
+            image_loc,
+            token_type_ids=None,  # segnents
+            attention_mask=None,  # input_mask
+            image_attention_mask=None,  # image_mask
+            output_all_attention_masks=False,
+            # pv
+            input_ids_pv=None,
+            token_type_ids_pv=None,  # segnents
+            attention_mask_pv=None,
+            index_p=None,
+            index_v=None,
+            device=None
+    ):
+        (sequence_output_t, sequence_output_v, pooled_output_t, pooled_output_v, all_attention_mask), (
+            sequence_output_pv_with_v, sequence_output_v_with_pv, pooled_output_pv_with_v, pooled_output_v_with_pv,
+            all_attention_mask_v_pv), (
+            sequence_output_t_with_pv, sequence_output_pv_with_t, pooled_output_t_with_pv, pooled_output_pv_with_t,
+            all_attention_mask_t_pv), (individual_txt, individual_pv, individual_v) = self.bert_tri(
+            input_ids,
+            image_feat,
+            image_loc,
+            token_type_ids,
+            attention_mask,
+            image_attention_mask,
+            input_ids_pv,
+            token_type_ids_pv,
+            attention_mask_pv,
+            output_all_encoded_layers=False,
+            output_all_attention_masks=output_all_attention_masks,
+        )
+
+        sequence_output_v, sequence_output_t, sequence_output_pv, pooled_output_v, pooled_output_t, pooled_output_pv = self.get_sequence_pooled_output_final(
+            sequence_output_t, sequence_output_v,
+            all_attention_mask,
+            sequence_output_pv_with_v, sequence_output_v_with_pv,
+            all_attention_mask_v_pv,
+            sequence_output_t_with_pv, sequence_output_pv_with_t,
+            all_attention_mask_t_pv,
+            individual_txt, individual_pv, individual_v)
+
+        c_initial, c_final = self.structure_aggregator(pooled_output_v, pooled_output_t, pooled_output_pv, sequence_output_pv, index_p, index_v, device)
+
+        return c_initial, c_final
+
+    def forward(
+            self,
+            labels,
+            # item 1
+            input_ids_1,
+            token_type_ids_1,
+            attention_mask_1,
+            input_ids_pv_1,
+            token_type_ids_pv_1,
+            attention_mask_pv_1,
+            index_p_1,
+            index_v_1,
+            image_feat_1,
+            image_loc_1,
+            image_attention_mask_1,
+            # item 2
+            input_ids_2,
+            token_type_ids_2,
+            attention_mask_2,
+            input_ids_pv_2,
+            token_type_ids_pv_2,
+            attention_mask_pv_2,
+            index_p_2,
+            index_v_2,
+            image_feat_2,
+            image_loc_2,
+            image_attention_mask_2,
+            output_all_attention_masks=False,
+            device=None
+    ):
+        _, item_embedding_1 = self.item_embedding(input_ids_1,
+                                                  image_feat_1,
+                                                  image_loc_1,
+                                                  token_type_ids_1,  # segnents
+                                                  attention_mask_1,  # input_mask
+                                                  image_attention_mask_1,  # image_mask
+                                                  output_all_attention_masks,
+                                                  # pv
+                                                  input_ids_pv_1,
+                                                  token_type_ids_pv_1,  # segnents
+                                                  attention_mask_pv_1,
+                                                  index_p_1,
+                                                  index_v_1,
+                                                  device)
+        _, item_embedding_2 = self.item_embedding(input_ids_2,
+                                                  image_feat_2,
+                                                  image_loc_2,
+                                                  token_type_ids_2,  # segnents
+                                                  attention_mask_2,  # input_mask
+                                                  image_attention_mask_2,  # image_mask
+                                                  output_all_attention_masks,
+                                                  # pv
+                                                  input_ids_pv_2,
+                                                  token_type_ids_pv_2,  # segnents
+                                                  attention_mask_pv_2,
+                                                  index_p_2,
+                                                  index_v_2,
+                                                  device)
+        # use inner product as logits
+        bs, hs = item_embedding_1.shape
+        inner_products = torch.bmm(item_embedding_1.view(bs, 1, hs), item_embedding_2.view(bs, hs, 1)).reshape(-1)
+        loss = self.loss_fct(inner_products, labels)
+        probs = 1 / (1 + torch.exp(-inner_products))
+
+        return item_embedding_1, item_embedding_2, inner_products, probs, loss
+
+
