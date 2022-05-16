@@ -259,7 +259,7 @@ class K3MDataLoader(object):
             image_feat_2, image_loc_2, image_mask_2 = self.post_process(input_ids_2, num_boxes_2, image_feat_2, image_loc_2, image_mask_2)
 
             batch = (
-                label, input_ids_1, input_mask_1, segment_ids_1, input_ids_pv_1, input_mask_pv_1, segment_ids_pv_1, \
+                label.astype(np.float32), input_ids_1, input_mask_1, segment_ids_1, input_ids_pv_1, input_mask_pv_1, segment_ids_pv_1,
                 image_feat_1, image_loc_1, image_target_1, image_mask_1, input_ids_2, input_mask_2, segment_ids_2,
                 input_ids_pv_2, input_mask_pv_2, segment_ids_pv_2, image_feat_2, image_loc_2, image_target_2, image_mask_2
             )
@@ -271,9 +271,10 @@ class K3MDataLoader(object):
 
     def post_process(self, input_ids, num_boxes, image_feat, image_loc, image_mask):
         batch_size = input_ids.shape[0]
+        sum_count = np.expand_dims(num_boxes, 1)
         # sum_count = np.sum(masked_label == 0, axis=1, keepdims=True)
         # sum_count[sum_count == 0] = 1
-        g_image_feat = np.sum(image_feat, axis=1) / num_boxes
+        g_image_feat = np.sum(image_feat, axis=1) / sum_count
         image_feat = np.concatenate(
             [np.expand_dims(g_image_feat, axis=1), image_feat], axis=1
         )

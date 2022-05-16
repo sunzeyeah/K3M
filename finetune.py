@@ -131,61 +131,54 @@ def worker(rank, args, config, world_size):
     cache = args.cache // world_size
 
     # 创建模型
-    if args.pretrained_model_path:
-        model = BertForMultiModalPreTraining_tri_stru.\
-            from_pretrained(args.pretrained_model_path, config=config, default_gpu=default_gpu).\
-            cuda(device)
-    else:
-        # model = BertForMultiModalPreTraining(config)
-        model = BertForMultiModalPreTraining_tri_stru(config).cuda(device)
+    model = K3MForItemAlignment(config).cuda(device)
 
     # 单机多卡情况下，使用torch.nn.parallel.DistributedDataParallel
     model = DDP(model)
 
     # 冻结部分模型参数
-    bert_weight_name = json.load(open(os.path.join(args.output_dir, args.pretrained_model_weights), "r", encoding="utf-8"))
-    if args.freeze != -1:
-        bert_weight_name_filtered = []
-        for name in bert_weight_name:
-            if "embeddings" in name:
-                bert_weight_name_filtered.append(name)
-            elif "encoder" in name:
-                layer_num = name.split(".")[2]
-                if int(layer_num) <= args.freeze:
-                    bert_weight_name_filtered.append(name)
-        # optimizer_grouped_parameters = []
-        for key, value in dict(model.named_parameters()).items():
-            if key[12:] in bert_weight_name_filtered:
-                value.requires_grad = False
-        if default_gpu:
-            logger.info(f"filtered weight: {bert_weight_name_filtered}")
+    # bert_weight_name = json.load(open(os.path.join(args.output_dir, args.pretrained_model_weights), "r", encoding="utf-8"))
+    # if args.freeze != -1:
+    #     bert_weight_name_filtered = []
+    #     for name in bert_weight_name:
+    #         if "embeddings" in name:
+    #             bert_weight_name_filtered.append(name)
+    #         elif "encoder" in name:
+    #             layer_num = name.split(".")[2]
+    #             if int(layer_num) <= args.freeze:
+    #                 bert_weight_name_filtered.append(name)
+    #     # optimizer_grouped_parameters = []
+    #     for key, value in dict(model.named_parameters()).items():
+    #         if key[12:] in bert_weight_name_filtered:
+    #             value.requires_grad = False
+    #     if default_gpu:
+    #         logger.info(f"filtered weight: {bert_weight_name_filtered}")
 
     # 加载之前训练好的模型（如果有）
-    # TODO: 区分单机和多机
-    # if args.file_state_dict:
-    #     need_model_dict = model.state_dict()
-    #     # if world_size <= 0:
-    #     #     map_location = "cpu"
-    #     # elif rank == -1:
-    #     #     map_location = "cuda"
-    #     # else:
-    #     #     map_location = {'cuda:%d' % 0: 'cuda:%d' % rank}
-    #     have_model_state = torch.load(args.file_state_dict)
-    #     new_dict = {}
-    #     for attr in have_model_state:
-    #         if attr.startswith("module."):
-    #             attr = attr.replace("module.", "", 1)#先改名
-    #             if attr in need_model_dict:#需要
-    #                 new_dict[attr] = have_model_state["module."+attr]
-    #         else:
-    #             if attr in need_model_dict:#需要
-    #                 new_dict[attr] = have_model_state[attr]
-    #     need_model_dict.update(new_dict)#更新对应的值
-    #     model.load_state_dict(need_model_dict)
-    #
-    #     del have_model_state #这里，手动释放cpu内存...
-    #     del new_dict
-    #     logger.info('Successfully loaded model state dict ...')
+    if args.file_state_dict and default_gpu:
+        need_model_dict = model.state_dict()
+        # if world_size <= 0:
+        #     map_location = "cpu"
+        # elif rank == -1:
+        #     map_location = "cuda"
+        # else:
+        #     map_location = {'cuda:%d' % 0: 'cuda:%d' % rank}
+        have_model_state = torch.load(args.file_state_dict)
+        new_dict = {}
+        for attr in have_model_state:
+            if attr.startswith("module."):
+                attr = attr.replace("module.", "", 1)#先改名
+                if attr in need_model_dict:#需要
+                    new_dict[attr] = have_model_state["module."+attr]
+            else:
+                if attr in need_model_dict:#需要
+                    new_dict[attr] = have_model_state[attr]
+        need_model_dict.update(new_dict)#更新对应的值
+        model.load_state_dict(need_model_dict)
+
+        del have_model_state #这里，手动释放cpu内存...
+        del new_dict
+        logger.info('Successfully loaded model state dict ...')
 
     # if args.file_checkpoint != "" and os.path.exists(args.file_checkpoint):
     #     checkpoint = torch.load(args.file_checkpoint, map_location=device)
@@ -204,10 +197,12 @@ def worker(rank, args, config, world_size):
     #     del checkpoint
     #     logger.info('Successfully loaded model checkpoint ...')
 
+    dist.barrier()
+
     # 生成模型存储路径
+    model_path = f"k3m_item_alignment_{args.model_name}_{config.num_hidden_layers}l_{config.num_attention_heads}h"
+    output_model_path = os.path.join(args.output_dir, model_path)
     if default_gpu:
-        model_path = f"k3m_{args.model_name}_{config.num_hidden_layers}l_{config.num_attention_heads}h"
-        output_model_path = os.path.join(args.output_dir, model_path)
         if not os.path.exists(args.output_dir):
             os.makedirs(args.output_dir)
         if not os.path.exists(output_model_path):
@@ -223,9 +218,9 @@ def worker(rank, args, config, world_size):
     tokenizer.do_basic_tokenize = False
 
     # 创建data loader
-    train_dataset = ConceptCapLoaderTrain_struc(
+    train_dataset = K3MDataLoader(
         args.data_dir,
-        args.file_name.format("train+valid"),
+        args.file_name.format("train"),
         tokenizer,
         max_seq_len=args.max_seq_length,
         max_seq_len_pv=args.max_seq_length_pv,
@@ -234,16 +229,13 @@ def worker(rank, args, config, world_size):
         batch_size=train_batch_size,
         visual_target=args.visual_target,
         v_target_size=config.v_target_size,
-        num_workers=num_workers,
-        rank=rank,
-        objective=args.objective,
-        cache=cache,
+        num_workers=args.num_workers,
         serializer=td.NumpySerializer if sys.platform.startswith("win") else td.LMDBSerializer
     )
     # logger.info(f'Finished preparing train data, total {train_dataset.num_dataset} records')
 
     if args.do_eval:
-        validation_dataset = ConceptCapLoaderVal_struc(
+        validation_dataset = K3MDataLoader(
             args.data_dir,
             args.file_name.format("valid"),
             tokenizer,
@@ -254,51 +246,66 @@ def worker(rank, args, config, world_size):
             batch_size=args.eval_batch_size,
             visual_target=args.visual_target,
             v_target_size=config.v_target_size,
-            objective=args.objective,
+            num_workers=args.num_workers,
             serializer=td.NumpySerializer if sys.platform.startswith("win") else td.LMDBSerializer
         )
         # logger.info(f'Finished preparing valid data, total {validation_dataset.num_dataset} records')
 
     # optimizer 参数设定
     no_decay = ["bias", "LayerNorm.bias", "LayerNorm.weight"]
-    if not args.pretrained_model_path:
-        param_optimizer = list(model.named_parameters())
-        optimizer_grouped_parameters = [
-            {
-                "params": [
-                    p for n, p in param_optimizer if not any(nd in n for nd in no_decay)
-                ],
-                "weight_decay": 0.01,
-            },
-            {
-                "params": [
-                    p for n, p in param_optimizer if any(nd in n for nd in no_decay)
-                ],
-                "weight_decay": 0.0,
-            },
-        ]
-    else:
-        optimizer_grouped_parameters = []
-        for key, value in dict(model.named_parameters()).items():
-            if value.requires_grad:
-                if key[12:] in bert_weight_name:
-                    lr = args.learning_rate * 0.1
-                else:
-                    lr = args.learning_rate
-
-                if any(nd in key for nd in no_decay):
-                    optimizer_grouped_parameters += [
-                        {"params": [value], "lr": lr, "weight_decay": 0.0}
-                    ]
-
-                if not any(nd in key for nd in no_decay):
-                    optimizer_grouped_parameters += [
-                        {"params": [value], "lr": lr, "weight_decay": 0.01}
-                    ]
-
-        if default_gpu:
-            logger.info(f"length of model.named_parameters(): {len(list(model.named_parameters()))}, "
-                        f"length of optimizer_grouped_parameters: {len(optimizer_grouped_parameters)}")
+    param_optimizer = list(model.named_parameters())
+    optimizer_grouped_parameters = [
+        {
+            "params": [
+                p for n, p in param_optimizer if not any(nd in n for nd in no_decay)
+            ],
+            "weight_decay": 0.01,
+        },
+        {
+            "params": [
+                p for n, p in param_optimizer if any(nd in n for nd in no_decay)
+            ],
+            "weight_decay": 0.0,
+        },
+    ]
+    # if not args.pretrained_model_path:
+    #     param_optimizer = list(model.named_parameters())
+    #     optimizer_grouped_parameters = [
+    #         {
+    #             "params": [
+    #                 p for n, p in param_optimizer if not any(nd in n for nd in no_decay)
+    #             ],
+    #             "weight_decay": 0.01,
+    #         },
+    #         {
+    #             "params": [
+    #                 p for n, p in param_optimizer if any(nd in n for nd in no_decay)
+    #             ],
+    #             "weight_decay": 0.0,
+    #         },
+    #     ]
+    # else:
+    #     optimizer_grouped_parameters = []
+    #     for key, value in dict(model.named_parameters()).items():
+    #         if value.requires_grad:
+    #             if key[12:] in bert_weight_name:
+    #                 lr = args.learning_rate * 0.1
+    #             else:
+    #                 lr = args.learning_rate
+    #
+    #             if any(nd in key for nd in no_decay):
+    #                 optimizer_grouped_parameters += [
+    #                     {"params": [value], "lr": lr, "weight_decay": 0.0}
+    #                 ]
+    #
+    #             if not any(nd in key for nd in no_decay):
+    #                 optimizer_grouped_parameters += [
+    #                     {"params": [value], "lr": lr, "weight_decay": 0.01}
+    #                 ]
+    #
+    #     if default_gpu:
+    #         logger.info(f"length of model.named_parameters(): {len(list(model.named_parameters()))}, "
+    #                     f"length of optimizer_grouped_parameters: {len(optimizer_grouped_parameters)}")
 
     # set different parameters for vision branch and lanugage branch.
     num_train_optimization_steps = int(
@@ -378,136 +385,83 @@ def worker(rank, args, config, world_size):
     for epoch in range(int(args.start_epoch), int(args.num_train_epochs)):
         model.train()
         for step, batch in enumerate(train_dataset):
-            index_p = torch.tensor(batch[-3])
-            index_v = torch.tensor(batch[-2])
-            batch = tuple(batch[:-3])
-            index_p = index_p.cuda(device=device, non_blocking=True)
-            index_v = index_v.cuda(device=device, non_blocking=True)
-            batch = tuple(t.cuda(device=device, non_blocking=True) for t in batch)
+            index_p_1 = torch.tensor(batch[-5]).cuda(device=device, non_blocking=True)
+            index_v_1 = torch.tensor(batch[-4]).cuda(device=device, non_blocking=True)
+            index_p_2 = torch.tensor(batch[-2]).cuda(device=device, non_blocking=True)
+            index_v_2 = torch.tensor(batch[-1]).cuda(device=device, non_blocking=True)
+            batch = tuple(t.cuda(device=device, non_blocking=True) for t in batch[:-6])
 
-            input_ids, input_mask, segment_ids, lm_label_ids, is_next, input_ids_pv, input_mask_pv, \
-            segment_ids_pv, lm_label_ids_pv, is_next_pv_v, is_next_pv_t, image_feat, image_loc, \
-            image_target, image_label, image_mask = (batch)
-
-            if args.objective == 1:
-                if_replace = is_next + is_next_pv_v + is_next_pv_t
-                image_label = image_label * (if_replace == 0).long().unsqueeze(1)  # 把替换了的对应行变为0
-                image_label[image_label == 0] = -1  # 发生了替换的mask标签还是归于-1
-                # print("image_label",image_label)
-                # print("lm_label_ids",lm_label_ids)
-                # lm_label_ids = lm_label_ids * (is_next == 0).long().unsqueeze(1)
-                lm_label_ids = lm_label_ids * (if_replace == 0).long().unsqueeze(1)
-                lm_label_ids[lm_label_ids == 0] = -1
-                # print("lm_label_ids",lm_label_ids)
-                # print("lm_label_ids_pv",lm_label_ids_pv)
-                lm_label_ids_pv = lm_label_ids_pv * (if_replace == 0).long().unsqueeze(1)
-                lm_label_ids_pv[lm_label_ids_pv == 0] = -1
-                # print("lm_label_ids_pv",lm_label_ids_pv)
+            labels, input_ids_1, input_mask_1, segment_ids_1, input_ids_pv_1, input_mask_pv_1, segment_ids_pv_1, \
+            image_feat_1, image_loc_1, image_target_1, image_mask_1, input_ids_2, input_mask_2, segment_ids_2, \
+            input_ids_pv_2, input_mask_pv_2, segment_ids_pv_2, image_feat_2, image_loc_2, image_target_2, \
+            image_mask_2 = (batch)
 
             optimizer.zero_grad()
             if args.fp16:
                 with torch.cuda.amp.autocast():
-                    masked_loss_t, masked_loss_v, next_sentence_loss, masked_loss_pv, next_sentence_loss_pv_v, \
-                    next_sentence_loss_pv_t, next_sentence_loss_t_v_pv, c_initial, c_final, loss_tri = model(
-                        input_ids,
-                        image_feat,
-                        image_loc,
-                        segment_ids,
-                        input_mask,
-                        image_mask,
-                        lm_label_ids,
-                        image_label,
-                        image_target,
-                        is_next,
-                        output_all_attention_masks=False,  # 默认值False
-                        input_ids_pv=input_ids_pv,
-                        token_type_ids_pv=segment_ids_pv,
-                        attention_mask_pv=input_mask_pv,
-                        masked_lm_labels_pv=lm_label_ids_pv,
-                        next_sentence_label_pv_v=is_next_pv_v,
-                        next_sentence_label_pv_t=is_next_pv_t,
-                        index_p=index_p,
-                        index_v=index_v,
+                    item_embeddings_1, item_embeddings_2, logits, probs, loss = model(
+                        labels,
+                        input_ids_1,
+                        segment_ids_1,
+                        input_mask_1,
+                        input_ids_pv_1,
+                        segment_ids_pv_1,
+                        input_mask_pv_1,
+                        index_p_1,
+                        index_v_1,
+                        image_feat_1,
+                        image_loc_1,
+                        image_mask_1,
+                        input_ids_2,
+                        segment_ids_2,
+                        input_mask_2,
+                        input_ids_pv_2,
+                        segment_ids_pv_2,
+                        input_mask_pv_2,
+                        index_p_2,
+                        index_v_2,
+                        image_feat_2,
+                        image_loc_2,
+                        image_mask_2,
+                        output_all_attention_masks=False,
                         device=device
                     )
-
-                    if args.objective == 2:
-                        next_sentence_loss = next_sentence_loss * 0
-                        next_sentence_loss_pv_v = next_sentence_loss_pv_v * 0
-                        next_sentence_loss_pv_t = next_sentence_loss_pv_t * 0
-                        next_sentence_loss_t_v_pv = next_sentence_loss_t_v_pv * 0
-                    masked_loss_v = masked_loss_v * args.loss_img_weight
-                    loss = masked_loss_t + masked_loss_v + masked_loss_pv + loss_tri
-                    loss = loss.mean()
-                    masked_loss_t = masked_loss_t.mean()
-                    masked_loss_v = masked_loss_v.mean()
-                    masked_loss_pv = masked_loss_pv.mean()
-                    loss_tri = loss_tri.mean()
                     if args.gradient_accumulation_steps > 1:
                         loss = loss / args.gradient_accumulation_steps
             else:
-                masked_loss_t, masked_loss_v, next_sentence_loss, masked_loss_pv, next_sentence_loss_pv_v, \
-                next_sentence_loss_pv_t, next_sentence_loss_t_v_pv, c_initial, c_final, loss_tri = model(
-                    input_ids,
-                    image_feat,
-                    image_loc,
-                    segment_ids,
-                    input_mask,
-                    image_mask,
-                    lm_label_ids,
-                    image_label,
-                    image_target,
-                    is_next,
-                    output_all_attention_masks=False,  # 默认值False
-                    input_ids_pv=input_ids_pv,
-                    token_type_ids_pv=segment_ids_pv,  # segnents
-                    attention_mask_pv=input_mask_pv,
-                    masked_lm_labels_pv=lm_label_ids_pv,
-                    next_sentence_label_pv_v=is_next_pv_v,
-                    next_sentence_label_pv_t=is_next_pv_t,
-                    index_p=index_p,
-                    index_v=index_v,
+                item_embeddings_1, item_embeddings_2, logits, probs, loss = model(
+                    labels,
+                    input_ids_1,
+                    segment_ids_1,
+                    input_mask_1,
+                    input_ids_pv_1,
+                    segment_ids_pv_1,
+                    input_mask_pv_1,
+                    index_p_1,
+                    index_v_1,
+                    image_feat_1,
+                    image_loc_1,
+                    image_mask_1,
+                    input_ids_2,
+                    segment_ids_2,
+                    input_mask_2,
+                    input_ids_pv_2,
+                    segment_ids_pv_2,
+                    input_mask_pv_2,
+                    index_p_2,
+                    index_v_2,
+                    image_feat_2,
+                    image_loc_2,
+                    image_mask_2,
+                    output_all_attention_masks=False,
                     device=device
                 )
-
-                if args.objective == 2:
-                    next_sentence_loss = next_sentence_loss * 0
-                    next_sentence_loss_pv_v = next_sentence_loss_pv_v * 0
-                    next_sentence_loss_pv_t = next_sentence_loss_pv_t * 0
-                    next_sentence_loss_t_v_pv = next_sentence_loss_t_v_pv * 0
-                masked_loss_v = masked_loss_v * args.loss_img_weight
-                loss = masked_loss_t + masked_loss_v + masked_loss_pv + loss_tri
-                loss = loss.mean()
-                masked_loss_t = masked_loss_t.mean()
-                masked_loss_v = masked_loss_v.mean()
-                masked_loss_pv = masked_loss_pv.mean()
-                loss_tri = loss_tri.mean()
                 if args.gradient_accumulation_steps > 1:
                     loss = loss / args.gradient_accumulation_steps
 
             if (step + 1) % args.log_steps == 0:
                 value_loss = int(loss.cpu().detach().numpy()[rank] * 1000) / 1000
-                value_masked_loss_t = int(masked_loss_t.cpu().detach().numpy()[rank] * 1000) / 1000
-                value_masked_loss_v = int(masked_loss_v.cpu().detach().numpy()[rank] * 1000) / 1000
-                value_masked_loss_pv = int(masked_loss_pv.cpu().detach().numpy()[rank] * 1000) / 1000
-                value_loss_tri = int(loss_tri.cpu().detach().numpy()[rank] * 1000) / 1000
-
-                # if rank != -1:#分布式训练
-                #     value_loss = int(loss.cpu().detach().numpy()[0] * 1000) / 1000
-                #     value_masked_loss_t = int(masked_loss_t.cpu().detach().numpy()[0] * 1000) / 1000
-                #     value_masked_loss_v = int(masked_loss_v.cpu().detach().numpy()[0] * 1000) / 1000
-                #     value_masked_loss_pv = int(masked_loss_pv.cpu().detach().numpy()[0] * 1000) / 1000
-                #     value_loss_tri = int(loss_tri.cpu().detach().numpy()[0] * 1000) / 1000
-                # else:
-                #     value_loss = int(loss.cpu().detach().numpy() * 1000) / 1000
-                #     value_masked_loss_t = int(masked_loss_t.cpu().detach().numpy() * 1000) / 1000
-                #     value_masked_loss_v = int(masked_loss_v.cpu().detach().numpy() * 1000) / 1000
-                #     value_masked_loss_pv = int(masked_loss_pv.cpu().detach().numpy() * 1000) / 1000
-                #     value_loss_tri = int(loss_tri.cpu().detach().numpy() * 1000) / 1000
-
-                logger.info(f"[Rank-{rank} Epoch-{epoch} Step-{step}] loss: {value_loss}, "
-                            f"loss_t: {value_masked_loss_t}, loss_v: {value_masked_loss_v}, "
-                            f"loss_pv: {value_masked_loss_pv}, loss_tri: {value_loss_tri}")
+                logger.info(f"[Rank-{rank} Epoch-{epoch} Step-{step}] loss: {value_loss}")
 
             # 梯度回传
             if args.fp16:
@@ -565,105 +519,94 @@ def worker(rank, args, config, world_size):
             torch.set_grad_enabled(False)
             num_batches = len(validation_dataset)
 
+            model_probs = None
+            model_labels = None
             for step, batch in enumerate(validation_dataset):
-                # image_ids = batch[-1]
-                index_p = torch.tensor(batch[-3])
-                index_v = torch.tensor(batch[-2])
-                batch = tuple(batch[:-3])
-                index_p = index_p.cuda(device=device, non_blocking=True)
-                index_v = index_v.cuda(device=device, non_blocking=True)
-                batch = tuple(t.cuda(device=device, non_blocking=True) for t in batch)
+                index_p_1 = torch.tensor(batch[-5]).cuda(device=device, non_blocking=True)
+                index_v_1 = torch.tensor(batch[-4]).cuda(device=device, non_blocking=True)
+                index_p_2 = torch.tensor(batch[-2]).cuda(device=device, non_blocking=True)
+                index_v_2 = torch.tensor(batch[-1]).cuda(device=device, non_blocking=True)
+                batch = tuple(t.cuda(device=device, non_blocking=True) for t in batch[:-6])
 
-                input_ids, input_mask, segment_ids, lm_label_ids, is_next, input_ids_pv, input_mask_pv, segment_ids_pv, \
-                lm_label_ids_pv, is_next_pv_v, is_next_pv_t, image_feat, image_loc, image_target, image_label, image_mask= (batch)
+                labels, input_ids_1, input_mask_1, segment_ids_1, input_ids_pv_1, input_mask_pv_1, segment_ids_pv_1, \
+                image_feat_1, image_loc_1, image_target_1, image_mask_1, input_ids_2, input_mask_2, segment_ids_2, \
+                input_ids_pv_2, input_mask_pv_2, segment_ids_pv_2, image_feat_2, image_loc_2, image_target_2, \
+                image_mask_2 = (batch)
 
                 if args.fp16:
                     with torch.cuda.amp.autocast():
-                        masked_loss_t, masked_loss_v, next_sentence_loss, masked_loss_pv, next_sentence_loss_pv_v, next_sentence_loss_pv_t, \
-                        next_sentence_loss_t_v_pv, c_initial, c_final, loss_tri = model(
-                            input_ids,
-                            image_feat,
-                            image_loc,
-                            segment_ids,
-                            input_mask,
-                            image_mask,
-                            lm_label_ids,
-                            image_label,
-                            image_target,
-                            is_next,
-                            input_ids_pv=input_ids_pv,
-                            token_type_ids_pv=segment_ids_pv,  # segnents
-                            attention_mask_pv=input_mask_pv,
-                            masked_lm_labels_pv=lm_label_ids_pv,
-                            next_sentence_label_pv_v=is_next_pv_v,
-                            next_sentence_label_pv_t=is_next_pv_t,
-                            index_p=index_p,
-                            index_v=index_v,
+                        item_embeddings_1, item_embeddings_2, logits, probs, loss = model(
+                            labels,
+                            input_ids_1,
+                            segment_ids_1,
+                            input_mask_1,
+                            input_ids_pv_1,
+                            segment_ids_pv_1,
+                            input_mask_pv_1,
+                            index_p_1,
+                            index_v_1,
+                            image_feat_1,
+                            image_loc_1,
+                            image_mask_1,
+                            input_ids_2,
+                            segment_ids_2,
+                            input_mask_2,
+                            input_ids_pv_2,
+                            segment_ids_pv_2,
+                            input_mask_pv_2,
+                            index_p_2,
+                            index_v_2,
+                            image_feat_2,
+                            image_loc_2,
+                            image_mask_2,
+                            output_all_attention_masks=False,
                             device=device
                         )
-                        masked_loss_v = masked_loss_v * args.loss_img_weight
-                        loss = masked_loss_t + masked_loss_v + masked_loss_pv + loss_tri
-                        loss = loss.mean()
-                        masked_loss_t = masked_loss_t.mean()
-                        masked_loss_v = masked_loss_v.mean()
-                        masked_loss_pv = masked_loss_pv.mean()
-                        loss_tri = loss_tri.mean()
                 else:
-                    masked_loss_t, masked_loss_v, next_sentence_loss, masked_loss_pv, next_sentence_loss_pv_v, next_sentence_loss_pv_t, \
-                    next_sentence_loss_t_v_pv, c_initial, c_final, loss_tri = model(
-                        input_ids,
-                        image_feat,
-                        image_loc,
-                        segment_ids,
-                        input_mask,
-                        image_mask,
-                        lm_label_ids,
-                        image_label,
-                        image_target,
-                        is_next,
-                        input_ids_pv=input_ids_pv,
-                        token_type_ids_pv=segment_ids_pv,  # segnents
-                        attention_mask_pv=input_mask_pv,
-                        masked_lm_labels_pv=lm_label_ids_pv,
-                        next_sentence_label_pv_v=is_next_pv_v,
-                        next_sentence_label_pv_t=is_next_pv_t,
-                        index_p=index_p,
-                        index_v=index_v,
+                    item_embeddings_1, item_embeddings_2, logits, probs, loss = model(
+                        labels,
+                        input_ids_1,
+                        segment_ids_1,
+                        input_mask_1,
+                        input_ids_pv_1,
+                        segment_ids_pv_1,
+                        input_mask_pv_1,
+                        index_p_1,
+                        index_v_1,
+                        image_feat_1,
+                        image_loc_1,
+                        image_mask_1,
+                        input_ids_2,
+                        segment_ids_2,
+                        input_mask_2,
+                        input_ids_pv_2,
+                        segment_ids_pv_2,
+                        input_mask_pv_2,
+                        index_p_2,
+                        index_v_2,
+                        image_feat_2,
+                        image_loc_2,
+                        image_mask_2,
+                        output_all_attention_masks=False,
                         device=device
                     )
-                    masked_loss_v = masked_loss_v * args.loss_img_weight
-                    loss = masked_loss_t + masked_loss_v + masked_loss_pv + loss_tri
-                    loss = loss.mean()
-                    masked_loss_t = masked_loss_t.mean()
-                    masked_loss_v = masked_loss_v.mean()
-                    masked_loss_pv = masked_loss_pv.mean()
-                    loss_tri = loss_tri.mean()
 
                 if default_gpu:
-                    sys.stdout.write("%d / %d \r" % (step, num_batches))
-                    sys.stdout.flush()
+                    probs = probs.cpu().detach().numpy()
+                    labels = labels.cpu().detach().numpy()
+                    if model_probs is None:
+                        model_probs = probs
+                        model_labels = labels
+                    else:
+                        model_probs = np.concatenate(model_probs, probs)
+                        model_labels = np.concatenate(model_labels, labels)
 
-                    value_loss = int(loss.cpu().detach().numpy()[0] * 1000) / 1000
-                    value_masked_loss_t = int(masked_loss_t.cpu().detach().numpy()[0] * 1000) / 1000
-                    value_masked_loss_v = int(masked_loss_v.cpu().detach().numpy()[0] * 1000) / 1000
-                    value_masked_loss_pv = int(masked_loss_pv.cpu().detach().numpy()[0] * 1000) / 1000
-                    value_loss_tri = int(loss_tri.cpu().detach().numpy()[0] * 1000) / 1000
-
-                    # if rank != -1:#分布式训练
-                    #     value_loss = int(loss.cpu().detach().numpy()[0] * 1000) / 1000
-                    #     value_masked_loss_t = int(masked_loss_t.cpu().detach().numpy()[0] * 1000) / 1000
-                    #     value_masked_loss_v = int(masked_loss_v.cpu().detach().numpy()[0] * 1000) / 1000
-                    #     value_masked_loss_pv = int(masked_loss_pv.cpu().detach().numpy()[0] * 1000) / 1000
-                    #     value_loss_tri = int(loss_tri.cpu().detach().numpy()[0] * 1000) / 1000
-                    # else:
-                    #     value_loss = int(loss.cpu().detach().numpy() * 1000) / 1000
-                    #     value_masked_loss_t = int(masked_loss_t.cpu().detach().numpy() * 1000) / 1000
-                    #     value_masked_loss_v = int(masked_loss_v.cpu().detach().numpy() * 1000) / 1000
-                    #     value_masked_loss_pv = int(masked_loss_pv.cpu().detach().numpy() * 1000) / 1000
-                    #     value_loss_tri = int(loss_tri.cpu().detach().numpy() * 1000) / 1000
-
-                    logger.info(f"[Eval] [Epoch-{epoch}] loss: {value_loss} loss_t: {value_masked_loss_t}, "
-                                f"loss_v: {value_masked_loss_v}, loss_pv: {value_masked_loss_pv}, loss_tri: {value_loss_tri}")
+            # calculate precision, recall and f1
+            for threshold in np.arange(0.1, 1.0, 0.1):
+                p = precision_score(model_labels, model_probs >= threshold)
+                r = recall_score(model_labels, model_probs >= threshold)
+                f1 = f1_score(model_labels, model_probs >= threshold)
+                logger.info(f"[Evaluation] threshold={threshold}, precision={p}, recall={r}, f1={f1}")
 
             torch.set_grad_enabled(True)
 
@@ -671,18 +614,18 @@ def worker(rank, args, config, world_size):
         if default_gpu:
             logger.info(f"[Epoch-{epoch}] saving model")
             model_to_save = (model.module if hasattr(model, "module") else model)  # Only save the model it-self
-            output_model_file = os.path.join(output_model_path, f"K3M_struc_presample-{args.if_pre_sampling}_epoch-{epoch}.bin")
-            output_checkpoint = os.path.join(output_model_path, f"K3M_struc_presample-{args.if_pre_sampling}_epoch-{epoch}.tar")
+            output_model_file = os.path.join(output_model_path, f"K3M_item_alignment-{args.if_pre_sampling}_epoch-{epoch}.bin")
             torch.save(model_to_save.state_dict(), output_model_file)
-            torch.save(
-                {
-                    "model_state_dict": model_to_save.state_dict(),
-                    "optimizer_state_dict": optimizer.state_dict(),
-                    "scheduler_state_dict": scheduler.state_dict(),
-                    "global_step": global_step,
-                },
-                output_checkpoint,
-            )
+            # output_checkpoint = os.path.join(output_model_path, f"K3M_struc_presample-{args.if_pre_sampling}_epoch-{epoch}.tar")
+            # torch.save(
+            #     {
+            #         "model_state_dict": model_to_save.state_dict(),
+            #         "optimizer_state_dict": optimizer.state_dict(),
+            #         "scheduler_state_dict": scheduler.state_dict(),
+            #         "global_step": global_step,
+            #     },
+            #     output_checkpoint,
+            # )
 
     # 线程清理
     cleanup()
@@ -694,34 +637,29 @@ def train_single(args, config, device):
     train_batch_size = args.train_batch_size // args.gradient_accumulation_steps
 
     # 创建模型
-    if args.pretrained_model_path:
-        model = K3MForItemAlignment.from_pretrained(args.pretrained_model_path,
-                                                                      config=config, default_gpu=True)
-    else:
-        # model = BertForMultiModalPreTraining(config)
-        model = K3MForItemAlignment(config)
+    model = K3MForItemAlignment(config)
 
     # 冻结部分模型参数
-    bert_weight_name = json.load(open(os.path.join(args.output_dir, args.pretrained_model_weights), "r", encoding="utf-8"))
-    if args.freeze != -1:
-        bert_weight_name_filtered = []
-        for name in bert_weight_name:
-            if "embeddings" in name:
-                bert_weight_name_filtered.append(name)
-            elif "encoder" in name:
-                layer_num = name.split(".")[2]
-                if int(layer_num) <= args.freeze:
-                    bert_weight_name_filtered.append(name)
-        # optimizer_grouped_parameters = []
-        for key, value in dict(model.named_parameters()).items():
-            if "bert." + key in bert_weight_name_filtered:
-                value.requires_grad = False
-        logger.info(f"filtered weight: {bert_weight_name_filtered}")
+    # bert_weight_name = json.load(open(os.path.join(args.output_dir, args.pretrained_model_weights), "r", encoding="utf-8"))
+    # if args.freeze != -1:
+    #     bert_weight_name_filtered = []
+    #     for name in bert_weight_name:
+    #         if "embeddings" in name:
+    #             bert_weight_name_filtered.append(name)
+    #         elif "encoder" in name:
+    #             layer_num = name.split(".")[2]
+    #             if int(layer_num) <= args.freeze:
+    #                 bert_weight_name_filtered.append(name)
+    #     # optimizer_grouped_parameters = []
+    #     for key, value in dict(model.named_parameters()).items():
+    #         if "bert." + key in bert_weight_name_filtered:
+    #             value.requires_grad = False
+    #     logger.info(f"filtered weight: {bert_weight_name_filtered}")
 
     # 加载之前训练好的模型（如果有）
     if args.file_state_dict:
         need_model_dict = model.state_dict()
-        have_model_state = torch.load(args.file_state_dict, map_location=device)
+        have_model_state = torch.load(args.file_state_dict)
         new_dict = {}
         for attr in have_model_state:
             if attr.startswith("module."):
@@ -807,47 +745,62 @@ def train_single(args, config, device):
 
     # optimizer 参数设定
     no_decay = ["bias", "LayerNorm.bias", "LayerNorm.weight"]
-    if not args.pretrained_model_path:
-        param_optimizer = list(model.named_parameters())
-        optimizer_grouped_parameters = [
-            {
-                "params": [
-                    p for n, p in param_optimizer if not any(nd in n for nd in no_decay)
-                ],
-                "weight_decay": 0.01,
-            },
-            {
-                "params": [
-                    p for n, p in param_optimizer if any(nd in n for nd in no_decay)
-                ],
-                "weight_decay": 0.0,
-            },
-        ]
-    else:
-        optimizer_grouped_parameters = []
-        for key, value in dict(model.named_parameters()).items():
-            if value.requires_grad:
-                if "bert." + key in bert_weight_name:
-                    lr = args.learning_rate * 0.1
-                else:
-                    lr = args.learning_rate
-
-                if any(nd in key for nd in no_decay):
-                    optimizer_grouped_parameters += [
-                        {"params": [value], "lr": lr, "weight_decay": 0.0}
-                    ]
-
-                if not any(nd in key for nd in no_decay):
-                    optimizer_grouped_parameters += [
-                        {"params": [value], "lr": lr, "weight_decay": 0.01}
-                    ]
-        logger.info(f"length of model.named_parameters(): {len(list(model.named_parameters()))}, "
-                    f"length of optimizer_grouped_parameters: {len(optimizer_grouped_parameters)}")
+    param_optimizer = list(model.named_parameters())
+    optimizer_grouped_parameters = [
+        {
+            "params": [
+                p for n, p in param_optimizer if not any(nd in n for nd in no_decay)
+            ],
+            "weight_decay": 0.01,
+        },
+        {
+            "params": [
+                p for n, p in param_optimizer if any(nd in n for nd in no_decay)
+            ],
+            "weight_decay": 0.0,
+        },
+    ]
+    # if not args.file_state_dict:
+    #     param_optimizer = list(model.named_parameters())
+    #     optimizer_grouped_parameters = [
+    #         {
+    #             "params": [
+    #                 p for n, p in param_optimizer if not any(nd in n for nd in no_decay)
+    #             ],
+    #             "weight_decay": 0.01,
+    #         },
+    #         {
+    #             "params": [
+    #                 p for n, p in param_optimizer if any(nd in n for nd in no_decay)
+    #             ],
+    #             "weight_decay": 0.0,
+    #         },
+    #     ]
+    # else:
+    #     optimizer_grouped_parameters = []
+    #     for key, value in dict(model.named_parameters()).items():
+    #         if value.requires_grad:
+    #             if "bert." + key in bert_weight_name:
+    #                 lr = args.learning_rate * 0.1
+    #             else:
+    #                 lr = args.learning_rate
+    #
+    #             if any(nd in key for nd in no_decay):
+    #                 optimizer_grouped_parameters += [
+    #                     {"params": [value], "lr": lr, "weight_decay": 0.0}
+    #                 ]
+    #
+    #             if not any(nd in key for nd in no_decay):
+    #                 optimizer_grouped_parameters += [
+    #                     {"params": [value], "lr": lr, "weight_decay": 0.01}
+    #                 ]
+    #     logger.info(f"length of model.named_parameters(): {len(list(model.named_parameters()))}, "
+    #                 f"length of optimizer_grouped_parameters: {len(optimizer_grouped_parameters)}")
 
     # set different parameters for vision branch and lanugage branch.
     num_train_optimization_steps = int(
         train_dataset.num_dataset
-        / args.train_batch_size
+        / train_batch_size
         / args.gradient_accumulation_steps
     ) * (args.num_train_epochs - args.start_epoch)
 
@@ -878,7 +831,7 @@ def train_single(args, config, device):
 
     logger.info("***** Running training *****")
     logger.info("  Num examples = %d", train_dataset.num_dataset)
-    logger.info("  Batch size = %d", args.train_batch_size)
+    logger.info("  Batch size = %d", train_batch_size)
     logger.info("  Num steps = %d", num_train_optimization_steps)
     logger.info("  Learning rate = %.3f", args.learning_rate)
 
@@ -1117,9 +1070,6 @@ def train_single(args, config, device):
                     model_probs = np.concatenate(model_probs, probs)
                     model_labels = np.concatenate(model_labels, labels)
 
-                # sys.stdout.write("%d / %d \r" % (step, num_batches))
-                # sys.stdout.flush()
-
             # calculate precision, recall and f1
             for threshold in np.arange(0.1, 1.0, 0.1):
                 p = precision_score(model_labels, model_probs >= threshold)
@@ -1169,7 +1119,7 @@ def get_parser():
     parser.add_argument("--pretrained_model_path", default=None, type=str, help="Bert pre-trained model selected in the list: bert-base-uncased, "
              "bert-base-uncased, roberta-base, roberta-large, ")
     parser.add_argument("--config_file", default="bert_base_6layer_6conect.json", type=str, help="The config file which specified the model details.")
-    parser.add_argument("--pretrained_model_weights", default="bert-base-uncased_weight_name.json", type=str, help="预训练模型的权重名称文件")
+    # parser.add_argument("--pretrained_model_weights", default="bert-base-uncased_weight_name.json", type=str, help="预训练模型的权重名称文件")
     parser.add_argument("--file_checkpoint", default="", type=str, help="Resume from checkpoint")
     parser.add_argument("--file_state_dict", default="", type=str, help="resume from only model")
     parser.add_argument("--log_steps", default=1, type=int, help="log model training process every n steps")
@@ -1186,12 +1136,8 @@ def get_parser():
     parser.add_argument("--num_workers", default=8, type=int, help="Number of workers in the dataloader.")
     parser.add_argument("--if_pre_sampling", default=1, type=int, help="sampling strategy, 融合策略 0.mean(交互+不交互) 1.sample1(交互,不交互) 2.sample2(交互,不交互)  3.仅交互")
     parser.add_argument("--with_coattention", action="store_true", help="whether pair loss.")
-    parser.add_argument("--objective", default=2, type=int, help="which objective to use \
-        0: with ICA loss, \
-        1: with ICA loss, for the not aligned pair, no masking objective, \
-        2: without ICA loss, do not sample negative pair.")
     parser.add_argument("--freeze", default=-1, type=int, help="specify which layer of textual stream of vilbert_k3m need to fixed.")
-    parser.add_argument("--on_memory", action="store_true", help="Whether to load train samples into memory or use disk")
+    # parser.add_argument("--on_memory", action="store_true", help="Whether to load train samples into memory or use disk")
     # optimization
     parser.add_argument("--warmup_proportion", default=0.1, type=float, help="Proportion of training to perform linear learning rate warmup for. "
              "E.g., 0.1 = 10%% of training.")
@@ -1211,8 +1157,6 @@ def get_parser():
              "Sequences longer than this will be truncated, and sequences shorter \n"
              "than this will be padded.")
     parser.add_argument("--max_num_pv", default=30, type=int, help="maximum number of (property, value) pairs")
-    parser.add_argument("--num_negative_pv", default=4, type=int, help="number of negative samples to use when calculating LPM loss")
-    parser.add_argument("--margin", default=10.0, type=float, help="margin in calculating LPM loss")
     # CV Model
     parser.add_argument("--max_region_length", default=36, type=int, help="The maximum region length of a image")
     parser.add_argument("--dynamic_attention", action="store_true", help="whether use dynamic attention for image")
@@ -1258,8 +1202,6 @@ def main():
     config.dynamic_attention = args.dynamic_attention
     config.if_pre_sampling = args.if_pre_sampling
     config.num_negative_image = args.num_negative_image
-    config.num_negative_pv = args.num_negative_pv
-    config.margin = args.margin
 
     if n_gpu > 1:
         # 单机多卡
