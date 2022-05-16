@@ -441,13 +441,14 @@ class ConceptCapLoader(td.RNGDataFlow):
         else:
             ds = serializer.load(serialized_file_name)
         self.num_dataset = len(ds)
-        self.ds = dict()
+        ds.reset_state()
+        self.dict = dict()
         for batch in ds:
             item_id, caption, pv, category, image_h, image_w, num_boxes, image_location_wp, image_feature_wp, \
             image_target_wp = (
                 batch
             )
-            self.ds[item_id] = batch
+            self.dict[item_id] = batch
 
         # preprocess_function = BertPreprocessBatch(tokenizer, max_seq_len=max_seq_len, max_seq_len_pv=max_seq_len_pv, max_num_pv=max_num_pv,
         #                                           max_region_len=max_region_len, visual_target=visual_target,
@@ -479,10 +480,10 @@ class ConceptCapLoader(td.RNGDataFlow):
             item_label = pair['item_label']
 
             item_id_1, caption_1, pv_1, category_1, image_h_1, image_w_1, num_boxes_1, image_location_wp_1, image_feature_wp_1, \
-            image_target_wp_1 = self.ds[src_item_id]
+            image_target_wp_1 = self.dict[src_item_id]
 
             item_id_2, caption_2, pv_2, category_2, image_h_2, image_w_2, num_boxes_2, image_location_wp_2, image_feature_wp_2, \
-            image_target_wp_2 = self.ds[tgt_item_id]
+            image_target_wp_2 = self.dict[tgt_item_id]
 
             yield tuple([item_label, item_id_1, caption_1, pv_1, category_1, image_h_1, image_w_1, num_boxes_1, image_location_wp_1, image_feature_wp_1, \
                          image_target_wp_1, item_id_2, caption_2, pv_2, category_2, image_h_2, image_w_2, num_boxes_2, image_location_wp_2, image_feature_wp_2, \
