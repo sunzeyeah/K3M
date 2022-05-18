@@ -866,7 +866,7 @@ def train_single(args, config, device):
             optimizer.zero_grad()
             if args.fp16:
                 with torch.cuda.amp.autocast():
-                    item_embeddings_1, item_embeddings_2, logits, probs, loss = model(
+                    item_embeddings_1, item_embeddings_2, probs, loss = model(
                         labels,
                         input_ids_1,
                         segment_ids_1,
@@ -893,7 +893,7 @@ def train_single(args, config, device):
                         output_all_attention_masks=False
                     )
             else:
-                item_embeddings_1, item_embeddings_2, logits, probs, loss = model(
+                item_embeddings_1, item_embeddings_2, probs, loss = model(
                     labels,
                     input_ids_1,
                     segment_ids_1,
@@ -1009,7 +1009,7 @@ def train_single(args, config, device):
 
                 if args.fp16:
                     with torch.cuda.amp.autocast():
-                        item_embeddings_1, item_embeddings_2, logits, probs, loss = model(
+                        item_embeddings_1, item_embeddings_2, probs, loss = model(
                             labels,
                             input_ids_1,
                             segment_ids_1,
@@ -1036,7 +1036,7 @@ def train_single(args, config, device):
                             output_all_attention_masks=False
                         )
                 else:
-                    item_embeddings_1, item_embeddings_2, logits, probs, loss = model(
+                    item_embeddings_1, item_embeddings_2, probs, loss = model(
                         labels,
                         input_ids_1,
                         segment_ids_1,

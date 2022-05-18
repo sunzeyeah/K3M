@@ -2903,7 +2903,8 @@ class K3MForItemAlignment(BertPreTrainedModel):
         # self.visual_target = config.visual_target
         # self.num_negative_image = config.num_negative_image
         # self.num_negative_pv = config.num_negative_pv
-        self.loss_fct = BCEWithLogitsLoss()
+        # self.loss_fct = BCEWithLogitsLoss()
+        self.loss_fct = nn.CosineEmbeddingLoss(margin=0.0)
         # structure aggregation module
         self.struc_w1 = nn.Linear(config.hidden_size * 3, config.hidden_size)#.to(devices[3])
         self.struc_w2 = nn.Linear(config.hidden_size, 1)#.to(devices[3])
@@ -2911,6 +2912,7 @@ class K3MForItemAlignment(BertPreTrainedModel):
         # self.struc_w_loss = nn.Linear(config.hidden_size, 2)#.to(devices[3])
         # self.loss_fct_struc = CrossEntropyLoss(ignore_index=-1)
         # self.loss_lpm = MarginRankingLoss(margin=config.margin)
+        self.cosine = nn.CosineSimilarity()
 
         # if self.visual_target == 0:
         #     self.vis_criterion = nn.KLDivLoss(reduction="none")
@@ -3398,11 +3400,13 @@ class K3MForItemAlignment(BertPreTrainedModel):
                                                   index_p_2,
                                                   index_v_2)
         # use inner product as logits
-        bs, hs = item_embedding_1.shape
-        inner_products = torch.bmm(item_embedding_1.view(bs, 1, hs), item_embedding_2.view(bs, hs, 1)).reshape(-1)
-        loss = self.loss_fct(inner_products, labels)
-        probs = 1 / (1 + torch.exp(-inner_products))
+        # bs, hs = item_embedding_1.shape
+        # inner_products = torch.bmm(item_embedding_1.view(bs, 1, hs), item_embedding_2.view(bs, hs, 1)).reshape(-1)
+        # loss = self.loss_fct(inner_products, labels)
+        # probs = 1 / (1 + torch.exp(-inner_products))
+        loss = self.loss_fct(item_embedding_1, item_embedding_2, 2*labels-1)
+        probs = (self.cosine(item_embedding_1, item_embedding_1) + 1) / 2
 
-        return item_embedding_1, item_embedding_2, inner_products, probs, loss
+        return item_embedding_1, item_embedding_2, probs, loss
 
 
