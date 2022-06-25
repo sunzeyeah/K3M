@@ -477,7 +477,7 @@ class ConceptCapLoader(td.RNGDataFlow):
         for pair in self.pairs:
             src_item_id = pair['src_item_id']
             tgt_item_id = pair['tgt_item_id']
-            item_label = pair['item_label']
+            item_label = pair.get('item_label', "0")
 
             item_id_1, caption_1, pv_1, category_1, image_h_1, image_w_1, num_boxes_1, image_location_wp_1, image_feature_wp_1, \
             image_target_wp_1 = self.dict[src_item_id]
