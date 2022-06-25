@@ -1140,7 +1140,6 @@ def get_parser():
     parser.add_argument("--if_pre_sampling", default=1, type=int, help="sampling strategy, 融合策略 0.mean(交互+不交互) 1.sample1(交互,不交互) 2.sample2(交互,不交互)  3.仅交互")
     parser.add_argument("--with_coattention", action="store_true", help="whether pair loss.")
     parser.add_argument("--freeze", default=-1, type=int, help="specify which layer of textual stream of vilbert_k3m need to fixed.")
-    # parser.add_argument("--on_memory", action="store_true", help="Whether to load train samples into memory or use disk")
     # optimization
     parser.add_argument("--warmup_proportion", default=0.1, type=float, help="Proportion of training to perform linear learning rate warmup for. "
              "E.g., 0.1 = 10%% of training.")
@@ -1148,7 +1147,7 @@ def get_parser():
     parser.add_argument("--adam_epsilon", default=1e-8, type=float, help="Epsilon for Adam optimizer.")
     parser.add_argument("--loss_img_weight", default=1, type=float, help="weight for image loss")
     parser.add_argument("--fp16", action="store_true", help="Whether to use 16-bit float precision instead of 32-bit")
-    # parser.add_argument("--apex_fast", action="store_true", help="Whether to use apex to increase training speed")
+    parser.add_argument("--loss_type", default="ce", type=str, help="type of loss function: ce, cosine")
     parser.add_argument("--loss_scale", default=0, type=float, help="Loss scaling to improve fp16 numeric stability. Only used when fp16 set to True.\n"
              "0 (default value): dynamic loss scaling.\n"
              "Positive power of 2: static loss scaling value.\n")
@@ -1206,6 +1205,7 @@ def main():
     config.dynamic_attention = args.dynamic_attention
     config.if_pre_sampling = args.if_pre_sampling
     config.num_negative_image = args.num_negative_image
+    config.loss_type = args.loss_type
 
     if n_gpu > 1:
         # 单机多卡

@@ -1312,9 +1312,7 @@ def get_parser():
     parser.add_argument("--do_lower_case", default=True, type=bool, help="Whether to lower case the input text. True for uncased models, False for cased models.")
     parser.add_argument("--max_seq_length", default=50, type=int, help="The maximum total input sequence length after WordPiece tokenization. \n"
              "Sequences longer than this will be truncated, and sequences shorter than this will be padded.")
-    parser.add_argument("--max_seq_length_pv", default=256, type=int, help="The maximum total input sequence length after WordPiece tokenization. \n"
-             "Sequences longer than this will be truncated, and sequences shorter \n"
-             "than this will be padded.")
+    parser.add_argument("--max_seq_length_pv", default=256, type=int, help="max length of pvs")
     parser.add_argument("--max_num_pv", default=30, type=int, help="maximum number of (property, value) pairs")
     parser.add_argument("--num_negative_pv", default=4, type=int, help="number of negative samples to use when calculating LPM loss")
     parser.add_argument("--margin", default=10.0, type=float, help="margin in calculating LPM loss")
