@@ -2168,10 +2168,7 @@ class ClassificationHead(nn.Module):
         super().__init__()
         self.config = config
         self.dense = nn.Linear(config.hidden_size * 2, config.hidden_size)
-        classifier_dropout = (
-            config.classifier_dropout if config.classifier_dropout is not None else config.hidden_dropout_prob
-        )
-        self.dropout = nn.Dropout(classifier_dropout)
+        self.dropout = nn.Dropout(config.hidden_dropout_prob)
 
         self.out_proj = nn.Linear(config.hidden_size, 2)
 
@@ -2924,7 +2921,7 @@ class K3MForItemAlignment(BertPreTrainedModel):
         self.score_cross1_pv = nn.Linear(config.hidden_size * num_modes, config.hidden_size)#.to(devices[2])
         self.score_cross2_pv = nn.Linear(config.hidden_size * num_modes, config.hidden_size)#.to(devices[2])
         self.soft_pv = nn.Linear(config.hidden_size * num_modes, config.hidden_size)#.to(devices[2])
-        self.soft_pv = nn.Linear(config.hidden_size * 2, 2)#.to(devices[2])
+        # self.soft_pv = nn.Linear(config.hidden_size * 2, 2)#.to(devices[2])
         # classification head
         if self.loss_type == "ce":
             self.classifier = ClassificationHead(config)

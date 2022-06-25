@@ -200,7 +200,7 @@ def worker(rank, args, config, world_size):
     dist.barrier()
 
     # 生成模型存储路径
-    model_path = f"k3m_item_alignment_{args.model_name}_{config.num_hidden_layers}l_{config.num_attention_heads}h"
+    model_path = f"item_alignment_{args.model_name}"
     output_model_path = os.path.join(args.output_dir, model_path)
     if default_gpu:
         if not os.path.exists(args.output_dir):
@@ -697,7 +697,7 @@ def train_single(args, config, device):
     #     logger.info('Successfully loaded model checkpoint ...')
 
     # 生成模型存储路径
-    model_path = f"k3m_item_alignment_{args.model_name}_{config.num_hidden_layers}l_{config.num_attention_heads}h"
+    model_path = f"item_alignment_{args.model_name}"
     output_model_path = os.path.join(args.output_dir, model_path)
     if not os.path.exists(args.output_dir):
         os.makedirs(args.output_dir)
@@ -1122,8 +1122,8 @@ def get_parser():
              "bert-base-uncased, roberta-base, roberta-large, ")
     parser.add_argument("--config_file", default="bert_base_6layer_6conect.json", type=str, help="The config file which specified the model details.")
     # parser.add_argument("--pretrained_model_weights", default="bert-base-uncased_weight_name.json", type=str, help="预训练模型的权重名称文件")
-    parser.add_argument("--file_checkpoint", default="", type=str, help="Resume from checkpoint")
-    parser.add_argument("--file_state_dict", default="", type=str, help="resume from only model")
+    parser.add_argument("--file_checkpoint", default=None, type=str, help="Resume from checkpoint")
+    parser.add_argument("--file_state_dict", default=None, type=str, help="resume from only model")
     parser.add_argument("--log_steps", default=1, type=int, help="log model training process every n steps")
     parser.add_argument("--cache", default=5000,  type=int, help="whether use chunck for parallel training.")
     # training
@@ -1196,8 +1196,8 @@ def main():
     else:
         config.v_target_size = 2048
         config.visual_target = args.visual_target
-    if "roberta" in args.model_name:
-        config.model = "roberta"
+    # if "roberta" in args.model_name:
+    config.model = "roberta"
     if args.freeze > config.t_biattention_id[0]:
         config.fixed_t_layer = config.t_biattention_id[0]
     config.use_image = args.use_image

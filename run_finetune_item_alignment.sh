@@ -8,14 +8,14 @@
 ROOT_DIR="/root/autodl-tmp/Data/ccks2022/task9"
 DATA_DIR=${ROOT_DIR}/processed/k3m
 OUTPUT_DIR=${ROOT_DIR}/output
-PRETRAINED_BERT_PATH="/root/autodl-tmp/Data/bert/chinese_roberta_wwm_ext_pytorch"
+PRETRAINED_BERT_PATH="/root/autodl-tmp/Data/bert/roberta_base"
 PRETRAINED_MODEL_PATH="${OUTPUT_DIR}/k3m_roberta_base_12l_12h/K3M_struc_presample-1_epoch-4.bin"
 #PRETRAINED_MODEL_PATH="${OUTPUT_DIR}/k3m_item_alignment_roberta_base_12l_12h/K3M_item_alignment-1_epoch-0.bin"
-MODEL_NAME="roberta_base"
+MODEL_NAME="k3m_base"
 MAIN="/root/Code/K3M/finetune.py"
-TRAIN_BATCH_SIZE=32
-EVAL_BATCH_SIZE=32
-LEARNING_RATE=1e-4
+TRAIN_BATCH_SIZE=64
+EVAL_BATCH_SIZE=64
+LEARNING_RATE=5e-5
 
 python $MAIN \
   --data_dir $DATA_DIR \
@@ -25,14 +25,14 @@ python $MAIN \
   --config_file "k3m_roberta_base.json" \
   --pretrained_model_path $PRETRAINED_BERT_PATH \
   --file_state_dict $PRETRAINED_MODEL_PATH \
-  --do_eval \
   --use_image \
   --train_batch_size $TRAIN_BATCH_SIZE \
   --eval_batch_size $EVAL_BATCH_SIZE \
   --learning_rate $LEARNING_RATE \
   --start_epoch 0 \
   --num_train_epochs 10 \
-  --log_steps 100 \
+  --log_steps 10 \
+  --warmup_proportion 0.3 \
   --if_pre_sampling 1 \
   --with_coattention \
   --visual_target 0 \
