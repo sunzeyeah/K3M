@@ -2932,6 +2932,7 @@ class K3MForItemAlignment(BertPreTrainedModel):
         # self.num_negative_pv = config.num_negative_pv
         if self.loss_type == "ce":
             self.loss_fct = BCEWithLogitsLoss()
+            self.softmax = torch.nn.Softmax()
         elif self.loss_type == "cosine":
             self.loss_fct = nn.CosineEmbeddingLoss(margin=0.0)
         else:

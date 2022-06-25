@@ -13,8 +13,8 @@ PRETRAINED_MODEL_PATH="${OUTPUT_DIR}/k3m_roberta_base_12l_12h/K3M_struc_presampl
 #PRETRAINED_MODEL_PATH="${OUTPUT_DIR}/k3m_item_alignment_roberta_base_12l_12h/K3M_item_alignment-1_epoch-0.bin"
 MODEL_NAME="k3m_base"
 MAIN="/root/Code/K3M/finetune.py"
-TRAIN_BATCH_SIZE=64
-EVAL_BATCH_SIZE=64
+TRAIN_BATCH_SIZE=32
+EVAL_BATCH_SIZE=32
 LEARNING_RATE=5e-5
 
 python $MAIN \
