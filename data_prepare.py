@@ -517,8 +517,8 @@ def serialize(args, dtype):
 
 
 def pair_serialize(args, dtype):
-    # pair_file_name = os.path.join(args.data_dir, f"item_train_{dtype}_pair_small.jsonl")
-    pair_file_name = os.path.join(args.data_dir, f"item_train_{dtype}_pair.jsonl")
+    pair_file_name = os.path.join(args.data_dir, f"item_{dtype}_pair.jsonl")
+    # pair_file_name = os.path.join(args.data_dir, f"item_train_{dtype}_pair.jsonl")
     if sys.platform.startswith("win"):
         # out_file = os.path.join(args.output_dir, f"{dtype}_item_alignment_small.npz")
         # serialized_file_name = os.path.join(args.output_dir, f"train_feat_small.npz")
@@ -526,9 +526,8 @@ def pair_serialize(args, dtype):
         serialized_file_name = os.path.join(args.output_dir, f"train+valid_feat.npz")
         serializer = td.NumpySerializer
     else:
-        # out_file = os.path.join(args.output_dir, f"{dtype}_item_alignment_small.lmdb")
-        # serialized_file_name = os.path.join(args.output_dir, f"train_feat_small.lmdb")
-        out_file = os.path.join(args.output_dir, f"train_{dtype}_item_alignment.lmdb")
+        out_file = os.path.join(args.output_dir, f"{dtype}_item_alignment.lmdb")
+        # out_file = os.path.join(args.output_dir, f"train_{dtype}_item_alignment.lmdb")
         serialized_file_name = os.path.join(args.output_dir, f"train+valid_feat.lmdb")
         serializer = td.LMDBSerializer
 

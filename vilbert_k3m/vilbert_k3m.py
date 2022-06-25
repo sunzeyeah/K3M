@@ -2161,6 +2161,31 @@ class BertImageEmbeddings(nn.Module):
         return embeddings
 
 
+class ClassificationHead(nn.Module):
+    """Head for sentence-level classification tasks."""
+
+    def __init__(self, config):
+        super().__init__()
+        self.config = config
+        self.dense = nn.Linear(config.hidden_size * 2, config.hidden_size)
+        classifier_dropout = (
+            config.classifier_dropout if config.classifier_dropout is not None else config.hidden_dropout_prob
+        )
+        self.dropout = nn.Dropout(classifier_dropout)
+
+        self.out_proj = nn.Linear(config.hidden_size, 2)
+
+    def forward(self, features, **kwargs):
+        # x = features[:, 0, :]  # take <s> token (equiv. to [CLS])
+        x = self.dropout(features)
+        x = self.dense(x)
+        x = torch.tanh(x)
+        x = self.dropout(x)
+        x = self.out_proj(x)
+
+        return x
+
+
 class BertForMultiModalPreTraining_tri_stru(BertPreTrainedModel):
     """BERT model with multi modal pre-training heads.
     """
@@ -2844,6 +2869,7 @@ class K3MForItemAlignment(BertPreTrainedModel):
     def __init__(self, config):
         super(K3MForItemAlignment, self).__init__(config)
         self.use_image = config.use_image
+        self.loss_type = config.loss_type
         # Bert Model Tri
         if config.model == "bert":
             self.embeddings = BertEmbeddings(config)
@@ -2898,13 +2924,21 @@ class K3MForItemAlignment(BertPreTrainedModel):
         self.score_cross1_pv = nn.Linear(config.hidden_size * num_modes, config.hidden_size)#.to(devices[2])
         self.score_cross2_pv = nn.Linear(config.hidden_size * num_modes, config.hidden_size)#.to(devices[2])
         self.soft_pv = nn.Linear(config.hidden_size * num_modes, config.hidden_size)#.to(devices[2])
+        self.soft_pv = nn.Linear(config.hidden_size * 2, 2)#.to(devices[2])
+        # classification head
+        if self.loss_type == "ce":
+            self.classifier = ClassificationHead(config)
 
         self.apply(self.init_weights)
         # self.visual_target = config.visual_target
         # self.num_negative_image = config.num_negative_image
         # self.num_negative_pv = config.num_negative_pv
-        # self.loss_fct = BCEWithLogitsLoss()
-        self.loss_fct = nn.CosineEmbeddingLoss(margin=0.0)
+        if self.loss_type == "ce":
+            self.loss_fct = BCEWithLogitsLoss()
+        elif self.loss_type == "cosine":
+            self.loss_fct = nn.CosineEmbeddingLoss(margin=0.0)
+        else:
+            logger.error("Unsupported type of loss function")
         # structure aggregation module
         self.struc_w1 = nn.Linear(config.hidden_size * 3, config.hidden_size)#.to(devices[3])
         self.struc_w2 = nn.Linear(config.hidden_size, 1)#.to(devices[3])
@@ -3399,13 +3433,25 @@ class K3MForItemAlignment(BertPreTrainedModel):
                                                   attention_mask_pv_2,
                                                   index_p_2,
                                                   index_v_2)
+        probs, loss = None, None
         # use inner product as logits
-        # bs, hs = item_embedding_1.shape
-        # inner_products = torch.bmm(item_embedding_1.view(bs, 1, hs), item_embedding_2.view(bs, hs, 1)).reshape(-1)
-        # loss = self.loss_fct(inner_products, labels)
-        # probs = 1 / (1 + torch.exp(-inner_products))
-        loss = self.loss_fct(item_embedding_1, item_embedding_2, 2*labels-1)
-        probs = (self.cosine(item_embedding_1, item_embedding_1) + 1) / 2
+        if self.loss_type == "inner":
+            bs, hs = item_embedding_1.shape
+            inner_products = torch.bmm(item_embedding_1.view(bs, 1, hs), item_embedding_2.view(bs, hs, 1)).reshape(-1)
+            loss = self.loss_fct(inner_products, labels)
+            probs = 1 / (1 + torch.exp(-inner_products))
+        elif self.loss_type == "cosine":
+            loss = self.loss_fct(item_embedding_1, item_embedding_2, 2*labels-1)
+            probs = (self.cosine(item_embedding_1, item_embedding_1) + 1) / 2
+        elif self.loss_type == "ce":
+            logits = self.classifier(torch.cat((item_embedding_1, item_embedding_2), dim=1))
+            probs = self.softmax(logits)
+            loss = self.loss_fct(logits.view(-1, 2), labels.view(-1))
+            item_embedding_1 = probs[:, 0]
+            item_embedding_2 = probs[:, 1]
+            probs = probs[:, 1]
+        else:
+            logger.error("Unsupported type of loss function")
 
         return item_embedding_1, item_embedding_2, probs, loss
 
