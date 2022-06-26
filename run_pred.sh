@@ -14,6 +14,7 @@ MAIN="/root/Code/K3M/finetune.py"
 THRESHOLD=0.5
 EPOCH=4
 PRETRAINED_MODEL_PATH="${OUTPUT_DIR}/item_alignment_k3m_base/K3M_item_alignment-1_epoch-${EPOCH}.bin"
+EVAL_BATCH_SIZE=40
 
 python $MAIN \
   --data_dir $DATA_DIR \

@@ -698,14 +698,15 @@ def train_single(args, config, device):
     #     del checkpoint
     #     logger.info('Successfully loaded model checkpoint ...')
 
+    # 生成模型存储路径
+    model_path = f"item_alignment_{args.model_name}"
+    output_model_path = os.path.join(args.output_dir, model_path)
+    if not os.path.exists(args.output_dir):
+        os.makedirs(args.output_dir)
+    if not os.path.exists(output_model_path):
+        os.makedirs(output_model_path)
+
     if args.do_train:
-        # 生成模型存储路径
-        model_path = f"item_alignment_{args.model_name}"
-        output_model_path = os.path.join(args.output_dir, model_path)
-        if not os.path.exists(args.output_dir):
-            os.makedirs(args.output_dir)
-        if not os.path.exists(output_model_path):
-            os.makedirs(output_model_path)
         # save all the hidden parameters.
         with open(os.path.join(output_model_path, "hyperparamter.txt"), "w") as f:
             print(args, file=f)  # Python 3.x
