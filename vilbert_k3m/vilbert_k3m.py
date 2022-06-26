@@ -3444,7 +3444,7 @@ class K3MForItemAlignment(BertPreTrainedModel):
         elif self.loss_type == "ce":
             logits = self.classifier(torch.cat((item_embedding_1, item_embedding_2), dim=1))
             probs = self.softmax(logits)
-            loss = self.loss_fct(logits.view(-1, 2), labels.view(-1))
+            loss = self.loss_fct(logits.view(-1, 2), labels.view(-1).to(torch.long))
             item_embedding_1 = probs[:, 0]
             item_embedding_2 = probs[:, 1]
             probs = probs[:, 1]

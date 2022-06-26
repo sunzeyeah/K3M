@@ -807,12 +807,13 @@ def train_single(args, config, device):
             warmup_steps=args.warmup_proportion * num_train_optimization_steps,
             t_total=num_train_optimization_steps,
         )
-
         if device == "cuda":
             for state in optimizer.state.values():
                 for k, v in state.items():
                     if torch.is_tensor(v):
                         state[k] = v.cuda()
+        if args.fp16:
+            scaler = torch.cuda.amp.GradScaler()
 
     if args.do_eval:
         validation_dataset = K3MDataLoader(
@@ -845,9 +846,6 @@ def train_single(args, config, device):
             serializer=td.NumpySerializer if sys.platform.startswith("win") else td.LMDBSerializer
         )
         # logger.info(f'Finished preparing valid data, total {validation_dataset.num_dataset} records')
-
-    if args.fp16:
-        scaler = torch.cuda.amp.GradScaler()
 
     if args.do_train:
         logger.info("***** Running training *****")
