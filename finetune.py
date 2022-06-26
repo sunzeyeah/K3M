@@ -639,9 +639,11 @@ def train_single(args, config, device):
 
     train_batch_size = args.train_batch_size // args.gradient_accumulation_steps
 
+    # 读取tokenizer
+    tokenizer = BertTokenizer.from_pretrained(args.pretrained_model_path, do_lower_case=args.do_lower_case)
+    tokenizer.do_basic_tokenize = False
     # 创建模型
     model = K3MForItemAlignment(config)
-
     # 冻结部分模型参数
     # bert_weight_name = json.load(open(os.path.join(args.output_dir, args.pretrained_model_weights), "r", encoding="utf-8"))
     # if args.freeze != -1:
@@ -696,39 +698,119 @@ def train_single(args, config, device):
     #     del checkpoint
     #     logger.info('Successfully loaded model checkpoint ...')
 
-    # 生成模型存储路径
-    model_path = f"item_alignment_{args.model_name}"
-    output_model_path = os.path.join(args.output_dir, model_path)
-    if not os.path.exists(args.output_dir):
-        os.makedirs(args.output_dir)
-    if not os.path.exists(output_model_path):
-        os.makedirs(output_model_path)
-    # save all the hidden parameters.
-    with open(os.path.join(output_model_path, "hyperparamter.txt"), "w") as f:
-        print(args, file=f)  # Python 3.x
-        print("\n", file=f)
-        print(config, file=f)
+    if args.do_train:
+        # 生成模型存储路径
+        model_path = f"item_alignment_{args.model_name}"
+        output_model_path = os.path.join(args.output_dir, model_path)
+        if not os.path.exists(args.output_dir):
+            os.makedirs(args.output_dir)
+        if not os.path.exists(output_model_path):
+            os.makedirs(output_model_path)
+        # save all the hidden parameters.
+        with open(os.path.join(output_model_path, "hyperparamter.txt"), "w") as f:
+            print(args, file=f)  # Python 3.x
+            print("\n", file=f)
+            print(config, file=f)
 
-    # 读取tokenizer
-    tokenizer = BertTokenizer.from_pretrained(args.pretrained_model_path, do_lower_case=args.do_lower_case)
-    tokenizer.do_basic_tokenize = False
+        # 创建data loader
+        train_dataset = K3MDataLoader(
+            args.data_dir,
+            args.file_name.format("train"),
+            tokenizer,
+            max_seq_len=args.max_seq_length,
+            max_seq_len_pv=args.max_seq_length_pv,
+            max_num_pv=args.max_num_pv,
+            max_region_len=args.max_region_length,
+            batch_size=train_batch_size,
+            visual_target=args.visual_target,
+            v_target_size=config.v_target_size,
+            num_workers=args.num_workers,
+            serializer=td.NumpySerializer if sys.platform.startswith("win") else td.LMDBSerializer
+        )
+        # logger.info(f'Finished preparing train data, total {train_dataset.num_dataset} records')
 
-    # 创建data loader
-    train_dataset = K3MDataLoader(
-        args.data_dir,
-        args.file_name.format("train"),
-        tokenizer,
-        max_seq_len=args.max_seq_length,
-        max_seq_len_pv=args.max_seq_length_pv,
-        max_num_pv=args.max_num_pv,
-        max_region_len=args.max_region_length,
-        batch_size=train_batch_size,
-        visual_target=args.visual_target,
-        v_target_size=config.v_target_size,
-        num_workers=args.num_workers,
-        serializer=td.NumpySerializer if sys.platform.startswith("win") else td.LMDBSerializer
-    )
-    # logger.info(f'Finished preparing train data, total {train_dataset.num_dataset} records')
+        # optimizer 参数设定
+        no_decay = ["bias", "LayerNorm.bias", "LayerNorm.weight"]
+        param_optimizer = list(model.named_parameters())
+        optimizer_grouped_parameters = [
+            {
+                "params": [
+                    p for n, p in param_optimizer if not any(nd in n for nd in no_decay)
+                ],
+                "weight_decay": 0.01,
+            },
+            {
+                "params": [
+                    p for n, p in param_optimizer if any(nd in n for nd in no_decay)
+                ],
+                "weight_decay": 0.0,
+            },
+        ]
+        # if not args.file_state_dict:
+        #     param_optimizer = list(model.named_parameters())
+        #     optimizer_grouped_parameters = [
+        #         {
+        #             "params": [
+        #                 p for n, p in param_optimizer if not any(nd in n for nd in no_decay)
+        #             ],
+        #             "weight_decay": 0.01,
+        #         },
+        #         {
+        #             "params": [
+        #                 p for n, p in param_optimizer if any(nd in n for nd in no_decay)
+        #             ],
+        #             "weight_decay": 0.0,
+        #         },
+        #     ]
+        # else:
+        #     optimizer_grouped_parameters = []
+        #     for key, value in dict(model.named_parameters()).items():
+        #         if value.requires_grad:
+        #             if "bert." + key in bert_weight_name:
+        #                 lr = args.learning_rate * 0.1
+        #             else:
+        #                 lr = args.learning_rate
+        #
+        #             if any(nd in key for nd in no_decay):
+        #                 optimizer_grouped_parameters += [
+        #                     {"params": [value], "lr": lr, "weight_decay": 0.0}
+        #                 ]
+        #
+        #             if not any(nd in key for nd in no_decay):
+        #                 optimizer_grouped_parameters += [
+        #                     {"params": [value], "lr": lr, "weight_decay": 0.01}
+        #                 ]
+        #     logger.info(f"length of model.named_parameters(): {len(list(model.named_parameters()))}, "
+        #                 f"length of optimizer_grouped_parameters: {len(optimizer_grouped_parameters)}")
+
+        # set different parameters for vision branch and lanugage branch.
+        num_train_optimization_steps = int(
+            train_dataset.num_dataset
+            / train_batch_size
+            / args.gradient_accumulation_steps
+        ) * (args.num_train_epochs - args.start_epoch)
+
+        # optimizer = AdamW(
+        optimizer = torch.optim.AdamW(
+            optimizer_grouped_parameters,
+            lr=args.learning_rate,
+            eps=args.adam_epsilon,
+            betas=(0.9, 0.98),
+        )
+        # logger.info(f'initial learning rate:{optimizer.param_groups[0]["lr"]}')
+
+        scheduler = WarmupLinearSchedule(
+            optimizer,
+            warmup_steps=args.warmup_proportion * num_train_optimization_steps,
+            t_total=num_train_optimization_steps,
+        )
+
+        if device == "cuda":
+            model.cuda()
+            for state in optimizer.state.values():
+                for k, v in state.items():
+                    if torch.is_tensor(v):
+                        state[k] = v.cuda()
 
     if args.do_eval:
         validation_dataset = K3MDataLoader(
@@ -746,126 +828,87 @@ def train_single(args, config, device):
         )
         # logger.info(f'Finished preparing valid data, total {validation_dataset.num_dataset} records')
 
-    # optimizer 参数设定
-    no_decay = ["bias", "LayerNorm.bias", "LayerNorm.weight"]
-    param_optimizer = list(model.named_parameters())
-    optimizer_grouped_parameters = [
-        {
-            "params": [
-                p for n, p in param_optimizer if not any(nd in n for nd in no_decay)
-            ],
-            "weight_decay": 0.01,
-        },
-        {
-            "params": [
-                p for n, p in param_optimizer if any(nd in n for nd in no_decay)
-            ],
-            "weight_decay": 0.0,
-        },
-    ]
-    # if not args.file_state_dict:
-    #     param_optimizer = list(model.named_parameters())
-    #     optimizer_grouped_parameters = [
-    #         {
-    #             "params": [
-    #                 p for n, p in param_optimizer if not any(nd in n for nd in no_decay)
-    #             ],
-    #             "weight_decay": 0.01,
-    #         },
-    #         {
-    #             "params": [
-    #                 p for n, p in param_optimizer if any(nd in n for nd in no_decay)
-    #             ],
-    #             "weight_decay": 0.0,
-    #         },
-    #     ]
-    # else:
-    #     optimizer_grouped_parameters = []
-    #     for key, value in dict(model.named_parameters()).items():
-    #         if value.requires_grad:
-    #             if "bert." + key in bert_weight_name:
-    #                 lr = args.learning_rate * 0.1
-    #             else:
-    #                 lr = args.learning_rate
-    #
-    #             if any(nd in key for nd in no_decay):
-    #                 optimizer_grouped_parameters += [
-    #                     {"params": [value], "lr": lr, "weight_decay": 0.0}
-    #                 ]
-    #
-    #             if not any(nd in key for nd in no_decay):
-    #                 optimizer_grouped_parameters += [
-    #                     {"params": [value], "lr": lr, "weight_decay": 0.01}
-    #                 ]
-    #     logger.info(f"length of model.named_parameters(): {len(list(model.named_parameters()))}, "
-    #                 f"length of optimizer_grouped_parameters: {len(optimizer_grouped_parameters)}")
-
-    # set different parameters for vision branch and lanugage branch.
-    num_train_optimization_steps = int(
-        train_dataset.num_dataset
-        / train_batch_size
-        / args.gradient_accumulation_steps
-    ) * (args.num_train_epochs - args.start_epoch)
-
-    # optimizer = AdamW(
-    optimizer = torch.optim.AdamW(
-        optimizer_grouped_parameters,
-        lr=args.learning_rate,
-        eps=args.adam_epsilon,
-        betas=(0.9, 0.98),
-    )
-    # logger.info(f'initial learning rate:{optimizer.param_groups[0]["lr"]}')
-
-    scheduler = WarmupLinearSchedule(
-        optimizer,
-        warmup_steps=args.warmup_proportion * num_train_optimization_steps,
-        t_total=num_train_optimization_steps,
-    )
-
-    if device == "cuda":
-        model.cuda()
-        for state in optimizer.state.values():
-            for k, v in state.items():
-                if torch.is_tensor(v):
-                    state[k] = v.cuda()
+    if args.do_pred:
+        test_dataset = K3MDataLoader(
+            args.data_dir,
+            args.file_name.format("valid"),
+            tokenizer,
+            max_seq_len=args.max_seq_length,
+            max_seq_len_pv=args.max_seq_length_pv,
+            max_num_pv=args.max_num_pv,
+            max_region_len=args.max_region_length,
+            batch_size=args.eval_batch_size,
+            visual_target=args.visual_target,
+            v_target_size=config.v_target_size,
+            serializer=td.NumpySerializer if sys.platform.startswith("win") else td.LMDBSerializer
+        )
+        # logger.info(f'Finished preparing valid data, total {validation_dataset.num_dataset} records')
 
     if args.fp16:
         scaler = torch.cuda.amp.GradScaler()
 
-    logger.info("***** Running training *****")
-    logger.info("  Num examples = %d", train_dataset.num_dataset)
-    logger.info("  Batch size = %d", train_batch_size)
-    logger.info("  Num steps = %d", num_train_optimization_steps)
-    logger.info("  Learning rate = %.3f", args.learning_rate)
+    if args.do_train:
+        logger.info("***** Running training *****")
+        logger.info("  Num examples = %d", train_dataset.num_dataset)
+        logger.info("  Batch size = %d", train_batch_size)
+        logger.info("  Num steps = %d", num_train_optimization_steps)
+        logger.info("  Learning rate = %.3f", args.learning_rate)
 
-    # 开始训练
-    global_step = 0
-    for epoch in range(int(args.start_epoch), int(args.num_train_epochs)):
-        model.train()
-        for step, batch in enumerate(train_dataset):
-            index_p_1 = torch.tensor(batch[-5])
-            index_v_1 = torch.tensor(batch[-4])
-            index_p_2 = torch.tensor(batch[-2])
-            index_v_2 = torch.tensor(batch[-1])
-            batch = tuple(batch[:-6])
-            if device == "cuda":
-                index_p_1 = index_p_1.cuda(device=device, non_blocking=True)
-                index_v_1 = index_v_1.cuda(device=device, non_blocking=True)
-                index_p_2 = index_p_2.cuda(device=device, non_blocking=True)
-                index_v_2 = index_v_2.cuda(device=device, non_blocking=True)
-                batch = tuple(t.cuda(device=device, non_blocking=True) for t in batch)
+        # 开始训练
+        global_step = 0
+        for epoch in range(int(args.start_epoch), int(args.num_train_epochs)):
+            model.train()
+            for step, batch in enumerate(train_dataset):
+                index_p_1 = torch.tensor(batch[-5])
+                index_v_1 = torch.tensor(batch[-4])
+                index_p_2 = torch.tensor(batch[-2])
+                index_v_2 = torch.tensor(batch[-1])
+                batch = tuple(batch[:-6])
+                if device == "cuda":
+                    index_p_1 = index_p_1.cuda(device=device, non_blocking=True)
+                    index_v_1 = index_v_1.cuda(device=device, non_blocking=True)
+                    index_p_2 = index_p_2.cuda(device=device, non_blocking=True)
+                    index_v_2 = index_v_2.cuda(device=device, non_blocking=True)
+                    batch = tuple(t.cuda(device=device, non_blocking=True) for t in batch)
 
-            labels, input_ids_1, input_mask_1, segment_ids_1, input_ids_pv_1, input_mask_pv_1, segment_ids_pv_1, \
-            image_feat_1, image_loc_1, image_target_1, image_mask_1, input_ids_2, input_mask_2, segment_ids_2,\
-            input_ids_pv_2, input_mask_pv_2, segment_ids_pv_2, image_feat_2, image_loc_2, image_target_2,\
-            image_mask_2 = (batch)
-            # input_ids, input_mask, segment_ids, lm_label_ids, is_next, input_ids_pv, input_mask_pv, \
-            # segment_ids_pv, lm_label_ids_pv, is_next_pv_v, is_next_pv_t, image_feat, image_loc, \
-            # image_target, image_label, image_mask = (batch)
+                labels, input_ids_1, input_mask_1, segment_ids_1, input_ids_pv_1, input_mask_pv_1, segment_ids_pv_1, \
+                image_feat_1, image_loc_1, image_target_1, image_mask_1, input_ids_2, input_mask_2, segment_ids_2,\
+                input_ids_pv_2, input_mask_pv_2, segment_ids_pv_2, image_feat_2, image_loc_2, image_target_2,\
+                image_mask_2 = (batch)
+                # input_ids, input_mask, segment_ids, lm_label_ids, is_next, input_ids_pv, input_mask_pv, \
+                # segment_ids_pv, lm_label_ids_pv, is_next_pv_v, is_next_pv_t, image_feat, image_loc, \
+                # image_target, image_label, image_mask = (batch)
 
-            optimizer.zero_grad()
-            if args.fp16:
-                with torch.cuda.amp.autocast():
+                optimizer.zero_grad()
+                if args.fp16:
+                    with torch.cuda.amp.autocast():
+                        item_embeddings_1, item_embeddings_2, probs, loss = model(
+                            labels,
+                            input_ids_1,
+                            segment_ids_1,
+                            input_mask_1,
+                            input_ids_pv_1,
+                            segment_ids_pv_1,
+                            input_mask_pv_1,
+                            index_p_1,
+                            index_v_1,
+                            image_feat_1,
+                            image_loc_1,
+                            image_mask_1,
+                            input_ids_2,
+                            segment_ids_2,
+                            input_mask_2,
+                            input_ids_pv_2,
+                            segment_ids_pv_2,
+                            input_mask_pv_2,
+                            index_p_2,
+                            index_v_2,
+                            image_feat_2,
+                            image_loc_2,
+                            image_mask_2,
+                            output_all_attention_masks=False
+                        )
+                else:
                     item_embeddings_1, item_embeddings_2, probs, loss = model(
                         labels,
                         input_ids_1,
@@ -892,104 +935,191 @@ def train_single(args, config, device):
                         image_mask_2,
                         output_all_attention_masks=False
                     )
-            else:
-                item_embeddings_1, item_embeddings_2, probs, loss = model(
-                    labels,
-                    input_ids_1,
-                    segment_ids_1,
-                    input_mask_1,
-                    input_ids_pv_1,
-                    segment_ids_pv_1,
-                    input_mask_pv_1,
-                    index_p_1,
-                    index_v_1,
-                    image_feat_1,
-                    image_loc_1,
-                    image_mask_1,
-                    input_ids_2,
-                    segment_ids_2,
-                    input_mask_2,
-                    input_ids_pv_2,
-                    segment_ids_pv_2,
-                    input_mask_pv_2,
-                    index_p_2,
-                    index_v_2,
-                    image_feat_2,
-                    image_loc_2,
-                    image_mask_2,
-                    output_all_attention_masks=False
-                )
 
-            try:
-                value_loss = int(loss.cpu().detach().numpy() * 1000) / 1000
-            except Exception:
-                value_loss = loss.cpu().detach().numpy()
+                try:
+                    value_loss = int(loss.cpu().detach().numpy() * 1000) / 1000
+                except Exception:
+                    value_loss = loss.cpu().detach().numpy()
 
-            if (step + 1) % args.log_steps == 0:
-                logger.info(f"[Epoch-{epoch} Step-{step}] loss: {value_loss}")
+                if step % args.log_steps == 0:
+                    logger.info(f"[Epoch-{epoch} Step-{step}] loss: {value_loss}")
 
-            if args.gradient_accumulation_steps > 1:
-                loss = loss / args.gradient_accumulation_steps
+                if args.gradient_accumulation_steps > 1:
+                    loss = loss / args.gradient_accumulation_steps
 
-            # 梯度回传
-            if args.fp16:
-                scaler.scale(loss).backward()
-            # elif args.apex_fast:
-            #     with amp.scale_loss(loss, optimizer) as scaled_loss:
-            #         scaled_loss.backward()
-            else:
-                loss.backward()
-
-            if (step + 1) % args.gradient_accumulation_steps == 0:
+                # 梯度回传
                 if args.fp16:
-                    scaler.step(optimizer)
-                    scaler.update()
-                else:
-                    optimizer.step()
-                global_step += 1
-                # 更新学习率
-                if args.fp16:
-                    lr_this_step = args.learning_rate * warmup_linear(
-                        global_step / num_train_optimization_steps,
-                        args.warmup_proportion,
-                        )
-                    optimizer.param_groups[0]["lr"] = lr_this_step
+                    scaler.scale(loss).backward()
                 # elif args.apex_fast:
-                #     scheduler.step()
+                #     with amp.scale_loss(loss, optimizer) as scaled_loss:
+                #         scaled_loss.backward()
                 else:
-                    scheduler.step()  # 在PyTorch 1.1.0之前的版本，学习率的调整应该被放在optimizer更新之前的，1.1及之后应该位于后面
-                # logger.debug(f"lr: {lr_this_step}")
+                    loss.backward()
 
-            # # Save a trained model after certain step just model_self
-            # if (step+1) % 5000 == 0:#每5000步存储一次
-            #     if default_gpu:
-            #         # Save a trained model
-            #         logger.info("** ** * Saving fine - tuned model ** ** * ")
-            #         #print("** ** * Saving fine - tuned model ** ** * ")
-            #         model_to_save = (model.module if hasattr(model, "module") else model)  # Only save the model it-self
-            #         output_checkpoint = os.path.join(savePath, "K3M_struc-presample_{}.tar".format(args.if_pre_sampling))
-            #         output_model_file = os.path.join(savePath, "K3M_struc-presample_{}.bin".format(args.if_pre_sampling))
-            #         torch.save(model_to_save.state_dict(), output_model_file)
-            #         torch.save(
-            #             {
-            #                 "model_state_dict": model_to_save.state_dict(),
-            #                 "optimizer_state_dict": optimizer.state_dict(),
-            #                 "scheduler_state_dict": scheduler.state_dict(),
-            #                 "global_step": global_step,
-            #             },
-            #             output_checkpoint,
-            #         )
+                if (step + 1) % args.gradient_accumulation_steps == 0:
+                    if args.fp16:
+                        scaler.step(optimizer)
+                        scaler.update()
+                    else:
+                        optimizer.step()
+                    global_step += 1
+                    # 更新学习率
+                    if args.fp16:
+                        lr_this_step = args.learning_rate * warmup_linear(
+                            global_step / num_train_optimization_steps,
+                            args.warmup_proportion,
+                            )
+                        optimizer.param_groups[0]["lr"] = lr_this_step
+                    # elif args.apex_fast:
+                    #     scheduler.step()
+                    else:
+                        scheduler.step()  # 在PyTorch 1.1.0之前的版本，学习率的调整应该被放在optimizer更新之前的，1.1及之后应该位于后面
+                    # logger.debug(f"lr: {lr_this_step}")
 
-        # Evaluation per epoch
-        if args.do_eval:
-            logger.info(f'[Epoch-{epoch}] Starting evaluation ...')
-            model.eval()
-            torch.set_grad_enabled(False)
-            num_batches = len(validation_dataset)
+                # # Save a trained model after certain step just model_self
+                # if (step+1) % 5000 == 0:#每5000步存储一次
+                #     if default_gpu:
+                #         # Save a trained model
+                #         logger.info("** ** * Saving fine - tuned model ** ** * ")
+                #         #print("** ** * Saving fine - tuned model ** ** * ")
+                #         model_to_save = (model.module if hasattr(model, "module") else model)  # Only save the model it-self
+                #         output_checkpoint = os.path.join(savePath, "K3M_struc-presample_{}.tar".format(args.if_pre_sampling))
+                #         output_model_file = os.path.join(savePath, "K3M_struc-presample_{}.bin".format(args.if_pre_sampling))
+                #         torch.save(model_to_save.state_dict(), output_model_file)
+                #         torch.save(
+                #             {
+                #                 "model_state_dict": model_to_save.state_dict(),
+                #                 "optimizer_state_dict": optimizer.state_dict(),
+                #                 "scheduler_state_dict": scheduler.state_dict(),
+                #                 "global_step": global_step,
+                #             },
+                #             output_checkpoint,
+                #         )
 
-            model_probs = None
-            model_labels = None
-            for step, batch in enumerate(validation_dataset):
+            # Evaluation per epoch
+            if args.do_eval:
+                logger.info(f'[Epoch-{epoch}] Starting evaluation ...')
+                model.eval()
+                torch.set_grad_enabled(False)
+                num_batches = len(validation_dataset)
+
+                model_probs = None
+                model_labels = None
+                for step, batch in enumerate(validation_dataset):
+                    index_p_1 = torch.tensor(batch[-5])
+                    index_v_1 = torch.tensor(batch[-4])
+                    index_p_2 = torch.tensor(batch[-2])
+                    index_v_2 = torch.tensor(batch[-1])
+                    batch = tuple(batch[:-6])
+                    if device == "cuda":
+                        index_p_1 = index_p_1.cuda(device=device, non_blocking=True)
+                        index_v_1 = index_v_1.cuda(device=device, non_blocking=True)
+                        index_p_2 = index_p_2.cuda(device=device, non_blocking=True)
+                        index_v_2 = index_v_2.cuda(device=device, non_blocking=True)
+                        batch = tuple(t.cuda(device=device, non_blocking=True) for t in batch)
+
+                    labels, input_ids_1, input_mask_1, segment_ids_1, input_ids_pv_1, input_mask_pv_1, segment_ids_pv_1, \
+                    image_feat_1, image_loc_1, image_target_1, image_mask_1, input_ids_2, input_mask_2, segment_ids_2, \
+                    input_ids_pv_2, input_mask_pv_2, segment_ids_pv_2, image_feat_2, image_loc_2, image_target_2, \
+                    image_mask_2 = (batch)
+
+                    if args.fp16:
+                        with torch.cuda.amp.autocast():
+                            item_embeddings_1, item_embeddings_2, probs, loss = model(
+                                labels,
+                                input_ids_1,
+                                segment_ids_1,
+                                input_mask_1,
+                                input_ids_pv_1,
+                                segment_ids_pv_1,
+                                input_mask_pv_1,
+                                index_p_1,
+                                index_v_1,
+                                image_feat_1,
+                                image_loc_1,
+                                image_mask_1,
+                                input_ids_2,
+                                segment_ids_2,
+                                input_mask_2,
+                                input_ids_pv_2,
+                                segment_ids_pv_2,
+                                input_mask_pv_2,
+                                index_p_2,
+                                index_v_2,
+                                image_feat_2,
+                                image_loc_2,
+                                image_mask_2,
+                                output_all_attention_masks=False
+                            )
+                    else:
+                        item_embeddings_1, item_embeddings_2, probs, loss = model(
+                            labels,
+                            input_ids_1,
+                            segment_ids_1,
+                            input_mask_1,
+                            input_ids_pv_1,
+                            segment_ids_pv_1,
+                            input_mask_pv_1,
+                            index_p_1,
+                            index_v_1,
+                            image_feat_1,
+                            image_loc_1,
+                            image_mask_1,
+                            input_ids_2,
+                            segment_ids_2,
+                            input_mask_2,
+                            input_ids_pv_2,
+                            segment_ids_pv_2,
+                            input_mask_pv_2,
+                            index_p_2,
+                            index_v_2,
+                            image_feat_2,
+                            image_loc_2,
+                            image_mask_2,
+                            output_all_attention_masks=False
+                        )
+
+                    probs = probs.cpu().detach().numpy()
+                    labels = labels.cpu().detach().numpy()
+                    if model_probs is None:
+                        model_probs = probs
+                        model_labels = labels
+                    else:
+                        model_probs = np.append(model_probs, probs)
+                        model_labels = np.append(model_labels, labels)
+
+                # calculate precision, recall and f1
+                for threshold in np.arange(0.1, 1.0, 0.1):
+                    p = precision_score(model_labels, model_probs >= threshold)
+                    r = recall_score(model_labels, model_probs >= threshold)
+                    f1 = f1_score(model_labels, model_probs >= threshold)
+                    logger.info(f"[Epoch-{epoch}] threshold={threshold}, precision={p}, recall={r}, f1={f1}")
+
+                torch.set_grad_enabled(True)
+
+            # Model saving per epoch
+            logger.info(f"[Epoch-{epoch}] saving model")
+            model_to_save = (model.module if hasattr(model, "module") else model)  # Only save the model it-self
+            output_model_file = os.path.join(output_model_path, f"K3M_item_alignment-{args.if_pre_sampling}_epoch-{epoch}.bin")
+            torch.save(model_to_save.state_dict(), output_model_file)
+            # output_checkpoint = os.path.join(output_model_path, f"K3M_item_alignment-{args.if_pre_sampling}_epoch-{epoch}.tar")
+            # torch.save(
+            #     {
+            #         "model_state_dict": model_to_save.state_dict(),
+            #         "optimizer_state_dict": optimizer.state_dict(),
+            #         "scheduler_state_dict": scheduler.state_dict(),
+            #         "global_step": global_step,
+            #     },
+            #     output_checkpoint,
+            # )
+
+    if args.do_pred:
+        model.eval()
+        torch.set_grad_enabled(False)
+        with open(os.path.join(output_model_path, f"deepAI_result_threshold={args.threshold}.jsonl"), "w", encoding="utf-8") as w:
+            for step, batch in enumerate(test_dataset):
+                src_item_ids = batch[-6]
+                tgt_item_ids = batch[-3]
                 index_p_1 = torch.tensor(batch[-5])
                 index_v_1 = torch.tensor(batch[-4])
                 index_p_2 = torch.tensor(batch[-2])
@@ -1006,6 +1136,9 @@ def train_single(args, config, device):
                 image_feat_1, image_loc_1, image_target_1, image_mask_1, input_ids_2, input_mask_2, segment_ids_2, \
                 input_ids_pv_2, input_mask_pv_2, segment_ids_pv_2, image_feat_2, image_loc_2, image_target_2, \
                 image_mask_2 = (batch)
+                # input_ids, input_mask, segment_ids, lm_label_ids, is_next, input_ids_pv, input_mask_pv, \
+                # segment_ids_pv, lm_label_ids_pv, is_next_pv_v, is_next_pv_t, image_feat, image_loc, \
+                # image_target, image_label, image_mask = (batch)
 
                 if args.fp16:
                     with torch.cuda.amp.autocast():
@@ -1063,39 +1196,18 @@ def train_single(args, config, device):
                         output_all_attention_masks=False
                     )
 
-                probs = probs.cpu().detach().numpy()
-                labels = labels.cpu().detach().numpy()
-                if model_probs is None:
-                    model_probs = probs
-                    model_labels = labels
-                else:
-                    model_probs = np.append(model_probs, probs)
-                    model_labels = np.append(model_labels, labels)
+                src_embeds = item_embeddings_1.cpu().detach().numpy()
+                tgt_embeds = item_embeddings_2.cpu().detach().numpy()
+                for src_item_id, tgt_item_id, src_embed, tgt_embed in zip(src_item_ids, tgt_item_ids, src_embeds, tgt_embeds):
+                    src_item_emb = ','.join([str(emb) for emb in src_embed]) if isinstance(src_embed, np.ndarray) else str(src_embed)
+                    tgt_item_emb = ','.join([str(emb) for emb in tgt_embed]) if isinstance(tgt_embed, np.ndarray) else str(tgt_embed)
+                    rd = {"src_item_id": src_item_id, "src_item_emb": f"[{src_item_emb}]",
+                          "tgt_item_id": tgt_item_id, "tgt_item_emb": f"[{tgt_item_emb}]",
+                          "threshold": args.threshold}
+                    w.write(json.dumps(rd) + "\n")
 
-            # calculate precision, recall and f1
-            for threshold in np.arange(0.1, 1.0, 0.1):
-                p = precision_score(model_labels, model_probs >= threshold)
-                r = recall_score(model_labels, model_probs >= threshold)
-                f1 = f1_score(model_labels, model_probs >= threshold)
-                logger.info(f"[Epoch-{epoch}] threshold={threshold}, precision={p}, recall={r}, f1={f1}")
-
-            torch.set_grad_enabled(True)
-
-        # Model saving per epoch
-        logger.info(f"[Epoch-{epoch}] saving model")
-        model_to_save = (model.module if hasattr(model, "module") else model)  # Only save the model it-self
-        output_model_file = os.path.join(output_model_path, f"K3M_item_alignment-{args.if_pre_sampling}_epoch-{epoch}.bin")
-        torch.save(model_to_save.state_dict(), output_model_file)
-        # output_checkpoint = os.path.join(output_model_path, f"K3M_item_alignment-{args.if_pre_sampling}_epoch-{epoch}.tar")
-        # torch.save(
-        #     {
-        #         "model_state_dict": model_to_save.state_dict(),
-        #         "optimizer_state_dict": optimizer.state_dict(),
-        #         "scheduler_state_dict": scheduler.state_dict(),
-        #         "global_step": global_step,
-        #     },
-        #     output_checkpoint,
-        # )
+                if args.log_steps is not None and step % args.log_steps == 0:
+                    logger.info(f"[Prediction] {step} samples processed")
 
 
 def warmup_linear(x, warmup=0.002):
@@ -1127,8 +1239,10 @@ def get_parser():
     parser.add_argument("--log_steps", default=1, type=int, help="log model training process every n steps")
     parser.add_argument("--cache", default=5000,  type=int, help="whether use chunck for parallel training.")
     # training
-    parser.add_argument("--use_image", action="store_true", help="是否使用图片模态")
+    parser.add_argument("--do_train", action="store_true", help="是否进行模型训练")
     parser.add_argument("--do_eval", action="store_true", help="是否进行模型验证")
+    parser.add_argument("--do_pred", action="store_true", help="是否进行模型预测")
+    parser.add_argument("--use_image", action="store_true", help="是否使用图片模态")
     parser.add_argument("--seed", default=42, type=int, help="random seed for initialization")
     parser.add_argument("--no_cuda", action="store_true", help="Whether not to use CUDA when available")
     parser.add_argument("--train_batch_size", default=32, type=int, help="Total batch size for training.")
@@ -1140,6 +1254,7 @@ def get_parser():
     parser.add_argument("--if_pre_sampling", default=1, type=int, help="sampling strategy, 融合策略 0.mean(交互+不交互) 1.sample1(交互,不交互) 2.sample2(交互,不交互)  3.仅交互")
     parser.add_argument("--with_coattention", action="store_true", help="whether pair loss.")
     parser.add_argument("--freeze", default=-1, type=int, help="specify which layer of textual stream of vilbert_k3m need to fixed.")
+    parser.add_argument("--threshold", default=0.5, type=float, help="model threshold for prediction")
     # optimization
     parser.add_argument("--warmup_proportion", default=0.1, type=float, help="Proportion of training to perform linear learning rate warmup for. "
              "E.g., 0.1 = 10%% of training.")
