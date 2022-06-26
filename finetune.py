@@ -1209,6 +1209,8 @@ def train_single(args, config, device):
                 if args.log_steps is not None and step % args.log_steps == 0:
                     logger.info(f"[Prediction] {step} samples processed")
 
+            logger.info(f"[Prediction] Finished prediction")
+
 
 def warmup_linear(x, warmup=0.002):
     """ Specifies a triangular learning rate schedule where peak is reached at `warmup`*`t_total`-th (as provided to BertAdam) training step.
