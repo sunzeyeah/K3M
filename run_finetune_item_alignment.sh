@@ -32,7 +32,7 @@ python $MAIN \
   --learning_rate $LEARNING_RATE \
   --start_epoch 0 \
   --num_train_epochs 10 \
-  --log_steps 10 \
+  --log_steps 100 \
   --warmup_proportion 0.3 \
   --if_pre_sampling 1 \
   --with_coattention \
