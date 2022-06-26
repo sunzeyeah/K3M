@@ -644,6 +644,8 @@ def train_single(args, config, device):
     tokenizer.do_basic_tokenize = False
     # 创建模型
     model = K3MForItemAlignment(config)
+    if device == "cuda":
+        model.cuda()
     # 冻结部分模型参数
     # bert_weight_name = json.load(open(os.path.join(args.output_dir, args.pretrained_model_weights), "r", encoding="utf-8"))
     # if args.freeze != -1:
@@ -807,7 +809,6 @@ def train_single(args, config, device):
         )
 
         if device == "cuda":
-            model.cuda()
             for state in optimizer.state.values():
                 for k, v in state.items():
                     if torch.is_tensor(v):
